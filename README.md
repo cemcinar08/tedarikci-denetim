@@ -24,7 +24,14 @@ Tedarikçi denetimi, bulgu/DÖF takibi ve **dış istihbarat** (domain'lerin dı
 - **Rapor**: tedarikçi bazında yazdırılabilir / PDF rapor
 - **Genel puan** = denetim × %60 + siber × %40. Risk: kritik açık bulgu, genel puan < 50 veya yüksek kritik tedarikçide < 70 → *yüksek*.
 
-## Kurulum
+## Hızlı başlangıç (çift tıkla)
+- **Windows:** `baslat.bat` dosyasına çift tıklayın.
+- **Mac:** `baslat.command` dosyasına sağ tıklayıp *Aç* deyin (ilk seferde güvenlik onayı ister).
+
+İlk açılışta gerekli paketler kurulur ve örnek veri yüklenir; tarayıcı otomatik olarak http://localhost:8000 adresini açar.
+Gereken tek şey Python 3.10+ (https://www.python.org/downloads/).
+
+## Kurulum (elle)
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
