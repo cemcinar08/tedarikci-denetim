@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tedarikçi Denetim</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Tedarikçi<span>Denetim</span></div>
+    <nav id="nav">
+      <a href="#/" data-route="">Pano</a>
+      <a href="#/tedarikciler" data-route="tedarikciler">Tedarikçiler</a>
+      <a href="#/denetimler" data-route="denetimler">Denetimler</a>
+      <a href="#/bulgular" data-route="bulgular">Bulgular &amp; Aksiyonlar</a>
+      <a href="#/istihbarat" data-route="istihbarat">Dış İstihbarat</a>
+    </nav>
+  </header>
+  <main id="app"><p class="muted">Yükleniyor…</p></main>
+  <div id="modal" class="modal hidden"><div class="modal-box" id="modal-box"></div></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
