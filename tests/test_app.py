@@ -9,7 +9,7 @@ from app.intel import scanner
 
 # ------------------------------------------------------------------ checklist
 def test_checklist_score_weights_and_na():
-    ids = sorted(cl.all_question_ids())
+    ids = [q["id"] for sec in cl.legacy_sections() for q in sec["questions"]]
     assert cl.compute_score({})["score"] is None
     assert cl.compute_score({q: "uygun" for q in ids})["score"] == 100
     assert cl.compute_score({q: "uygun değil" for q in ids})["score"] == 0
@@ -118,9 +118,14 @@ def test_full_flow(client, monkeypatch):
 
     assert client.post("/api/suppliers", json={"name": "X", "domains": ["geçersiz domain"]}).status_code == 422
 
+    # Soru seti seçilmeden denetim oluşturulamaz
+    assert client.post(f"/api/suppliers/{sid}/audits", json={"audit_date": "2026-01-10"}).status_code == 422
+    genel = next(x for x in client.get("/api/question-sets").json() if x["standard"] == "Genel")
+
     # Denetim + cevaplar + puan
-    a = client.post(f"/api/suppliers/{sid}/audits", json={"audit_date": "2026-01-10"}).json()
-    ids = sorted(cl.all_question_ids())
+    a = client.post(f"/api/suppliers/{sid}/audits", json={"audit_date": "2026-01-10", "question_set_ids": [genel["id"]]}).json()
+    ids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
+    assert len(ids) == 27
     answers = {q: {"answer": "uygun"} for q in ids}
     answers[ids[0]] = {"answer": "uygun değil", "note": "kanıt yok"}
     answers[ids[1]] = {"answer": "kısmen"}
@@ -167,3 +172,85 @@ def test_full_flow(client, monkeypatch):
     assert client.get("/").status_code == 200
     assert client.delete(f"/api/suppliers/{sid}").status_code == 204
     assert client.get("/api/findings").json() == []
+
+
+def test_question_sets_and_combined_audit(client):
+    sets = client.get("/api/question-sets").json()
+    names = {x["standard"] for x in sets if x["builtin"]}
+    assert {"PCI DSS", "ISO 27001", "ISO 9001", "ISO 14001", "ISO 45001", "KVKK", "Genel"} <= names
+    pci = next(x for x in sets if x["standard"] == "PCI DSS")
+    iso = next(x for x in sets if x["standard"] == "ISO 27001")
+
+    # Standart setler değiştirilemez / silinemez
+    body = {"name": "X", "sections": [{"title": "B", "questions": ["S?"]}]}
+    assert client.put(f"/api/question-sets/{pci['id']}", json=body).status_code == 403
+    assert client.delete(f"/api/question-sets/{pci['id']}").status_code == 403
+    assert client.post("/api/question-sets", json={"name": "X", "sections": [{"title": "B", "questions": [" "]}]}).status_code == 422
+
+    # Kopyala -> düzenle
+    c = client.post(f"/api/question-sets/{iso['id']}/clone").json()
+    assert not c["builtin"] and c["question_count"] == iso["question_count"]
+    c2 = client.put(f"/api/question-sets/{c['id']}", json={"name": "Bulut BG", "standard": "ISO 27001", "sections": [
+        {"title": "Erişim", "weight": 30, "questions": ["MFA var mı?", "Yetki gözden geçirme yapılıyor mu?"]}]}).json()
+    assert c2["question_count"] == 2 and c2["sections"][0]["questions"][1]["id"] == "s1.2"
+
+    # Çoklu set + özel sorular + kütüphaneye kaydet
+    sid = client.post("/api/suppliers", json={"name": "Ödeme A.Ş."}).json()["id"]
+    a = client.post(f"/api/suppliers/{sid}/audits", json={
+        "audit_date": "2026-02-01", "question_set_ids": [pci["id"], c2["id"], pci["id"]],
+        "custom_sections": [{"title": "Sahaya özel", "weight": 5, "questions": ["Kamera kayıtları 90 gün saklanıyor mu?"]}],
+        "save_custom_as": "Saha kontrolleri"}).json()
+    assert a["set_names"] == ["PCI DSS v4.0", "Bulut BG", "Saha kontrolleri"]
+    qids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
+    assert len(qids) == len(set(qids)) == pci["question_count"] + 2 + 1
+    assert any(x["name"] == "Saha kontrolleri" for x in client.get("/api/question-sets").json())
+
+    # Set sonradan silinse/değişse de denetim kendi kopyasını korur
+    client.delete(f"/api/question-sets/{c2['id']}")
+    answers = {q: {"answer": "uygun"} for q in qids}
+    answers[qids[-1]] = {"answer": "uygun değil"}
+    r = client.put(f"/api/audits/{a['id']}", json={"answers": answers, "status": "tamamlandı"}).json()
+    assert 0 < r["score"] < 100 and len(r["result"]["sections"]) == len(a["checklist"])
+    assert client.post(f"/api/audits/{a['id']}/generate-findings").json()["created"] == 1
+    f = client.get(f"/api/findings?supplier_id={sid}").json()[0]
+    assert f["title"] == "[Sahaya özel] Kamera kayıtları 90 gün saklanıyor mu?"
+
+
+def test_legacy_db_migration(tmp_path, monkeypatch):
+    """Soru seti özelliğinden önceki veritabanı açılabilmeli, eski denetim cevapları korunmalı."""
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+      CREATE TABLE suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT, country TEXT,
+        contact_name TEXT, email TEXT, phone TEXT, domains TEXT NOT NULL DEFAULT '[]', criticality TEXT NOT NULL DEFAULT 'orta',
+        status TEXT NOT NULL DEFAULT 'aktif', notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE audits (id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_id INTEGER NOT NULL, audit_date TEXT NOT NULL,
+        auditor TEXT, audit_type TEXT NOT NULL DEFAULT 'yerinde', status TEXT NOT NULL DEFAULT 'planlandı', score REAL,
+        notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE audit_answers (audit_id INTEGER NOT NULL, question_id TEXT NOT NULL, answer TEXT, note TEXT,
+        PRIMARY KEY (audit_id, question_id));
+      INSERT INTO suppliers (name) VALUES ('Eski');
+      INSERT INTO audits (supplier_id, audit_date, status, score) VALUES (1, '2025-01-01', 'tamamlandı', 0);
+      INSERT INTO audit_answers VALUES (1, 'kalite.1', 'uygun değil', NULL);
+    """)
+    old.commit(); old.close()
+    monkeypatch.setattr("app.db.DB_PATH", path)
+    from app.main import app
+    with TestClient(app) as c:
+        a = c.get("/api/audits/1").json()
+        assert a["set_names"] == ["Genel Tedarikçi Denetimi"] and a["answers"]["kalite.1"]["answer"] == "uygun değil"
+        assert a["result"]["score"] == 0
+        assert len(c.get("/api/question-sets").json()) >= 7
+
+
+def test_question_set_unique_names(client):
+    body = {"name": "Depo", "sections": [{"title": "B", "questions": ["S?"]}]}
+    a = client.post("/api/question-sets", json=body)
+    assert a.status_code == 201
+    assert client.post("/api/question-sets", json={**body, "name": "depo "}).status_code == 409
+    c1 = client.post(f"/api/question-sets/{a.json()['id']}/clone").json()
+    c2 = client.post(f"/api/question-sets/{a.json()['id']}/clone").json()
+    assert c1["name"] == "Depo (kopya)" and c2["name"] == "Depo (kopya 2)"
+    assert client.put(f"/api/question-sets/{c1['id']}", json=body).status_code == 409
+    assert client.put(f"/api/question-sets/{a.json()['id']}", json=body).status_code == 200

@@ -32,7 +32,21 @@ CREATE TABLE IF NOT EXISTS audits (
     status       TEXT NOT NULL DEFAULT 'planlandı', -- planlandı / devam ediyor / tamamlandı
     score        REAL,
     notes        TEXT,
+    checklist    TEXT,   -- denetim oluşturulurken seçilen soru setlerinin anlık kopyası (JSON)
+    set_names    TEXT,   -- JSON: kullanılan set adları
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS question_sets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    key          TEXT UNIQUE,                     -- yerleşik setler için sabit anahtar
+    name         TEXT NOT NULL,
+    standard     TEXT,                            -- ör. PCI DSS, ISO 27001, Özel
+    description  TEXT,
+    builtin      INTEGER NOT NULL DEFAULT 0,
+    sections     TEXT NOT NULL DEFAULT '[]',      -- JSON
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_answers (
@@ -95,8 +109,22 @@ def get_db():
 
 
 def init_db() -> None:
+    from .question_sets import BUILTIN_SETS
     with get_db() as db:
         db.executescript(SCHEMA)
+        # Eski veritabanları için sütun ekleme (geçiş)
+        cols = {r["name"] for r in db.execute("PRAGMA table_info(audits)")}
+        for col in ("checklist", "set_names"):
+            if col not in cols:
+                db.execute(f"ALTER TABLE audits ADD COLUMN {col} TEXT")
+        # Yerleşik soru setlerini yükle / güncelle
+        for qs in BUILTIN_SETS:
+            db.execute(
+                """INSERT INTO question_sets (key, name, standard, description, builtin, sections)
+                   VALUES (?,?,?,?,1,?)
+                   ON CONFLICT(key) DO UPDATE SET name=excluded.name, standard=excluded.standard,
+                     description=excluded.description, sections=excluded.sections, builtin=1""",
+                (qs["key"], qs["name"], qs["standard"], qs["description"], json.dumps(qs["sections"], ensure_ascii=False)))
 
 
 def row(r):
@@ -105,6 +133,9 @@ def row(r):
     d = dict(r)
     if "domains" in d and isinstance(d["domains"], str):
         d["domains"] = json.loads(d["domains"] or "[]")
+    for k in ("sections", "checklist", "set_names"):
+        if k in d and isinstance(d[k], str):
+            d[k] = json.loads(d[k])
     if "result" in d and isinstance(d["result"], str):
         d["result"] = json.loads(d["result"])
     return d

@@ -1,18 +1,20 @@
 """Örnek veri yükler:  python -m app.seed"""
 import datetime as dt
-import json
 
-from . import checklist as cl
 from .db import get_db, init_db
+from . import main as m
 
 D = lambda n: (dt.date.today() + dt.timedelta(days=n)).isoformat()
 
+# ad, kategori, ülke, kritiklik, domain'ler, kullanılacak soru setleri (key)
 SUPPLIERS = [
-    ("Anadolu Metal San. A.Ş.", "Hammadde", "Türkiye", "yüksek", ["example.com"]),
-    ("Ege Lojistik Ltd.", "Lojistik", "Türkiye", "orta", ["example.org"]),
-    ("Marmara Ambalaj", "Ambalaj", "Türkiye", "düşük", []),
-    ("Bulut Yazılım Hizmetleri", "Yazılım / SaaS", "Türkiye", "yüksek", ["example.net"]),
+    ("Anadolu Metal San. A.Ş.", "Hammadde", "Türkiye", "yüksek", ["example.com"], ["genel", "iso-9001-2015"]),
+    ("Ege Lojistik Ltd.", "Lojistik", "Türkiye", "orta", ["example.org"], ["genel"]),
+    ("Marmara Ambalaj", "Ambalaj", "Türkiye", "düşük", [], ["iso-9001-2015", "iso-14001-2015"]),
+    ("Bulut Ödeme Hizmetleri", "Ödeme / SaaS", "Türkiye", "yüksek", ["example.net"], ["iso-27001-2022", "pci-dss-4", "kvkk"]),
 ]
+PATTERNS = [["uygun", "uygun", "uygun", "kısmen", "uygun değil"], ["uygun", "uygun", "kısmen"],
+            None, ["uygun", "uygun", "uygun", "kısmen", "uygun", "uygun değil", "uygun"]]
 
 
 def main():
@@ -21,31 +23,29 @@ def main():
         if db.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0]:
             print("Veritabanında zaten kayıt var; örnek veri yüklenmedi.")
             return
-        qids = sorted(cl.all_question_ids())
-        for i, (name, cat, country, crit, domains) in enumerate(SUPPLIERS):
-            sid = db.execute(
-                "INSERT INTO suppliers (name, category, country, criticality, domains, contact_name, email) VALUES (?,?,?,?,?,?,?)",
-                (name, cat, country, crit, json.dumps(domains), "Satın Alma Yetkilisi", f"info@{domains[0] if domains else 'ornek.com.tr'}"),
-            ).lastrowid
-            if i == 2:
-                db.execute("INSERT INTO audits (supplier_id, audit_date, audit_type, status) VALUES (?,?,?,?)",
-                           (sid, D(14), "yerinde", "planlandı"))
-                continue
-            aid = db.execute(
-                "INSERT INTO audits (supplier_id, audit_date, auditor, audit_type, status) VALUES (?,?,?,?,?)",
-                (sid, D(-40 - 30 * i), "Kalite Ekibi", "yerinde", "tamamlandı")).lastrowid
-            answers = {}
-            for j, q in enumerate(qids):
-                a = ["uygun", "uygun", "uygun", "kısmen", "uygun değil"][(j + i * 2) % 5] if i != 1 else ["uygun", "uygun", "kısmen"][j % 3]
-                answers[q] = a
-                db.execute("INSERT INTO audit_answers (audit_id, question_id, answer) VALUES (?,?,?)", (aid, q, a))
-            db.execute("UPDATE audits SET score=? WHERE id=?", (cl.compute_score(answers)["score"], aid))
-            for q, a in list(answers.items())[:6]:
-                if a == "uygun değil":
-                    db.execute(
-                        "INSERT INTO findings (supplier_id, audit_id, source, title, severity, owner, due_date, action) VALUES (?,?,?,?,?,?,?,?)",
-                        (sid, aid, "denetim", cl.question_text(q), "yüksek", "Tedarikçi Kalite Müh.", D(-5 if i == 0 else 20),
-                         "Tedarikçiden kök neden analizi ve aksiyon planı talep edilecek."))
+        set_ids = {r["key"]: r["id"] for r in db.execute("SELECT id, key FROM question_sets WHERE key IS NOT NULL")}
+
+    for i, (name, cat, country, crit, domains, keys) in enumerate(SUPPLIERS):
+        s = m.create_supplier(m.SupplierIn(name=name, category=cat, country=country, criticality=crit, domains=domains,
+                                           contact_name="Satın Alma Yetkilisi",
+                                           email=f"info@{domains[0] if domains else 'ornek.com.tr'}"))
+        ids = [set_ids[k] for k in keys]
+        if PATTERNS[i] is None:  # planlanmış, henüz yapılmamış denetim
+            m.create_audit(s["id"], m.AuditIn(question_set_ids=ids, audit_date=D(14), audit_type="yerinde"))
+            continue
+        a = m.create_audit(s["id"], m.AuditIn(question_set_ids=ids, audit_date=D(-40 - 30 * i), auditor="Kalite Ekibi"))
+        qids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
+        answers = {q: m.AnswerIn(answer=PATTERNS[i][(j + i) % len(PATTERNS[i])]) for j, q in enumerate(qids)}
+        m.update_audit(a["id"], m.AuditUpdate(status="tamamlandı", answers=answers))
+        m.generate_audit_findings(a["id"])
+        with get_db() as db:  # örnek veri sade kalsın: yalnızca "uygun değil" bulguları
+            db.execute("DELETE FROM findings WHERE audit_id=? AND severity='orta'", (a["id"],))
+        with get_db() as db:  # bazı bulgulara sorumlu/termin ver; birini gecikmiş yap
+            db.execute("UPDATE findings SET owner='Tedarikçi Kalite Müh.', "
+                       "action='Tedarikçiden kök neden analizi ve aksiyon planı talep edilecek.' WHERE audit_id=?", (a["id"],))
+            if i == 0:
+                db.execute("UPDATE findings SET due_date=? WHERE id=(SELECT MIN(id) FROM findings WHERE audit_id=?)",
+                           (D(-5), a["id"]))
     print("Örnek veri yüklendi.")
 
 

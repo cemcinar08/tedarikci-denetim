@@ -37,12 +37,17 @@ function toast(msg, ms = 3500) {
 
 function modal(html, onMount) {
   const m = document.getElementById("modal");
-  document.getElementById("modal-box").innerHTML = html;
+  const box = document.getElementById("modal-box");
+  box.innerHTML = html;
+  box.style.maxWidth = "";
   m.classList.remove("hidden");
   m.onclick = (e) => { if (e.target === m) closeModal(); };
   onMount && onMount(document.getElementById("modal-box"));
 }
-const closeModal = () => document.getElementById("modal").classList.add("hidden");
+const closeModal = () => {
+  document.getElementById("modal").classList.add("hidden");
+  document.getElementById("modal-box").innerHTML = ""; // gizli formda yinelenen id'ler kalmasın
+};
 document.addEventListener("keydown", (e) => e.key === "Escape" && closeModal());
 
 const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, v === "" ? null : v]));
@@ -58,7 +63,7 @@ const checkBadge = (s) => {
 const gradeColor = (g) => ({ A: "b-ok", B: "b-ok", C: "b-warn", D: "b-bad", F: "b-bad" }[g] || "");
 const gradeBox = (g, big) => (g ? `<span class="grade badge ${gradeColor(g)} ${big ? "big" : ""}">${esc(g)}</span>` : `<span class="muted">—</span>`);
 const scoreColor = (v) => (v == null ? "var(--info)" : v >= 85 ? "var(--ok)" : v >= 70 ? "var(--warn)" : "var(--bad)");
-const meter = (v) => (v == null ? `<span class="muted">—</span>` :
+const meter = (v) => (v == null ? `<span class="muted" style="display:block">—</span>` :
   `<div style="display:flex;align-items:center;gap:8px"><div class="meter" style="flex:1"><div style="width:${v}%;background:${scoreColor(v)}"></div></div><b style="min-width:34px;text-align:right">${num(v)}</b></div>`);
 const ratingBadge = (r) => (r ? `<span class="badge ${{ Onaylı: "b-ok", "Şartlı Onaylı": "b-warn", "Gelişim Gerekli": "b-bad", Onaysız: "b-crit" }[r]}">${esc(r)}</span>` : "");
 const overdue = (f) => f.status !== "kapandı" && f.due_date && f.due_date < todayISO();
@@ -80,12 +85,15 @@ const routes = [
   [/^#\/istihbarat$/, viewIntel],
   [/^#\/tarama\/(\d+)$/, viewScan],
   [/^#\/rapor\/(\d+)$/, viewReport],
+  [/^#\/soru-setleri$/, viewQuestionSets],
+  [/^#\/soru-seti\/(\d+|yeni)$/, viewQuestionSet],
 ];
 
 async function router() {
+  if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
   const h = location.hash || "#/";
   const top = h.split("/")[1] || "";
-  const map = { tedarikci: "tedarikciler", denetim: "denetimler", tarama: "istihbarat", rapor: "tedarikciler" };
+  const map = { tedarikci: "tedarikciler", denetim: "denetimler", tarama: "istihbarat", rapor: "tedarikciler", "soru-seti": "soru-setleri" };
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === (map[top] ?? top)));
   for (const [re, fn] of routes) {
     const m = h.match(re);
@@ -281,8 +289,9 @@ async function viewSupplier(id, tab = "ozet") {
 // ================================================================ DENETİMLER
 function auditsTable(list, withSupplier = false) {
   if (!list.length) return `<div class="empty">Denetim kaydı yok.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Tarih</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>Tür</th><th>Denetçi</th><th>Durum</th><th>Puan</th><th></th></tr></thead><tbody>
+  return `<div class="table-wrap"><table><thead><tr><th>Tarih</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>Soru setleri</th><th>Tür</th><th>Denetçi</th><th>Durum</th><th>Puan</th><th></th></tr></thead><tbody>
   ${list.map((a) => `<tr><td>${fmtDate(a.audit_date)}</td>${withSupplier ? `<td><a href="#/tedarikci/${a.supplier_id}">${esc(a.supplier_name)}</a></td>` : ""}
+    <td class="small">${esc((a.set_names || ["Genel Tedarikçi Denetimi"]).join(", "))}</td>
     <td>${esc(a.audit_type)}</td><td>${esc(a.auditor || "—")}</td><td>${statusBadge(a.status)}</td><td style="min-width:140px">${meter(a.score)}</td>
     <td><a href="#/denetim/${a.id}">Aç →</a></td></tr>`).join("")}</tbody></table></div>`;
 }
@@ -298,19 +307,100 @@ async function viewAudits() {
   };
 }
 
-function auditForm(supplierId, suppliers) {
+// Bölüm/soru düzenleyici (özel sorular ve soru seti editörü ortak kullanır)
+function sectionBuilder(root, sections = []) {
+  const blank = () => ({ title: "", weight: 10, questions: [] });
+  let data = sections.length ? sections.map((x) => ({ title: x.title, weight: x.weight, questions: x.questions.map((q) => q.text ?? q) })) : [];
+  const draw = () => {
+    root.innerHTML = `${data.map((sec, i) => `<div class="sb-sec" data-i="${i}">
+        <div class="sb-head"><input class="sb-title" placeholder="Bölüm adı (ör. Fiziksel Güvenlik)" value="${esc(sec.title)}">
+          <label class="sb-w" title="Bölümün toplam puandaki ağırlığı">Ağırlık <input class="sb-weight" type="number" min="1" value="${esc(sec.weight)}"></label>
+          <button type="button" class="sm danger sb-del" title="Bölümü sil">✕</button></div>
+        <textarea class="sb-qs" placeholder="Her satıra bir soru yazın&#10;ör. Sunucu odasına girişler kayıt altında mı?&#10;ör. Yedekler şifreli mi?">${esc(sec.questions.join("\n"))}</textarea>
+        <div class="small muted sb-count">${sec.questions.length} soru</div></div>`).join("")}
+      <button type="button" class="sm sb-add">+ Bölüm ekle</button>`;
+    root.querySelectorAll(".sb-sec").forEach((el) => {
+      const i = +el.dataset.i;
+      el.querySelector(".sb-title").oninput = (e) => (data[i].title = e.target.value);
+      el.querySelector(".sb-weight").oninput = (e) => (data[i].weight = +e.target.value || 1);
+      el.querySelector(".sb-qs").oninput = (e) => {
+        data[i].questions = e.target.value.split("\n").map((x) => x.trim()).filter(Boolean);
+        el.querySelector(".sb-count").textContent = `${data[i].questions.length} soru`;
+        root.dispatchEvent(new Event("change"));
+      };
+      el.querySelector(".sb-del").onclick = () => { data.splice(i, 1); draw(); root.dispatchEvent(new Event("change")); };
+    });
+    root.querySelector(".sb-add").onclick = () => { data.push(blank()); draw(); root.querySelector(".sb-sec:last-of-type .sb-title")?.focus(); };
+  };
+  draw();
+  return {
+    get: () => data.filter((x) => x.title.trim() || x.questions.length),
+    count: () => data.reduce((a, x) => a + x.questions.length, 0),
+    validate() {
+      for (const [i, x] of this.get().entries()) {
+        if (!x.title.trim()) return `${i + 1}. bölümün adı boş.`;
+        if (!x.questions.length) return `"${x.title}" bölümünde soru yok.`;
+      }
+      return null;
+    },
+  };
+}
+
+async function auditForm(supplierId, suppliers) {
+  const sets = await api("/api/question-sets");
+  const std = sets.filter((x) => x.builtin), mine = sets.filter((x) => !x.builtin);
+  const setCard = (x) => `<label class="set-card"><input type="checkbox" name="qs" value="${x.id}">
+      <div><div><b>${esc(x.name)}</b> <span class="badge">${esc(x.standard || "Özel")}</span></div>
+      <div class="small muted">${x.question_count} soru · ${x.sections.length} bölüm${x.description ? " · " + esc(x.description) : ""}</div></div></label>`;
   modal(`<h2>Denetim planla</h2><form id="f">
     ${suppliers ? `<div style="margin-bottom:12px"><label>Tedarikçi</label><select name="supplier_id">${suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}</select></div>` : ""}
     <div class="row"><div><label>Tarih</label><input type="date" name="audit_date" required value="${todayISO()}"></div>
-      <div><label>Tür</label><select name="audit_type"><option>yerinde</option><option>uzaktan</option><option>doküman</option></select></div></div>
-    <div class="row"><div><label>Denetçi</label><input name="auditor"></div>
+      <div><label>Tür</label><select name="audit_type"><option>yerinde</option><option>uzaktan</option><option>doküman</option></select></div>
+      <div><label>Denetçi</label><input name="auditor"></div>
       <div><label>Durum</label><select name="status"><option>planlandı</option><option>devam ediyor</option></select></div></div>
+
+    <h3>Özel soru seti</h3>
+    <div class="small muted" style="margin-bottom:8px">Bu denetime özel sorular ekleyin. İsterseniz kütüphaneye kaydedip sonraki denetimlerde tekrar kullanabilirsiniz.</div>
+    <div id="sb"></div>
+    <div id="saveRow" class="hidden" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <label style="display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap"><input type="checkbox" id="saveChk" style="width:auto"> Kütüphaneye kaydet:</label>
+      <input id="saveName" placeholder="Set adı (ör. Lojistik Depo Denetimi)"></div>
+
+    <h3>Standart soru setleri</h3>
+    <div class="set-grid">${std.map(setCard).join("")}</div>
+    ${mine.length ? `<h3>Kayıtlı özel setlerim</h3><div class="set-grid">${mine.map(setCard).join("")}</div>` : ""}
+    <div class="small muted" style="margin:6px 0 12px">Birden fazla set seçebilirsiniz; hepsi tek denetimde birleşir ve her bölüm kendi ağırlığıyla puanlanır. <a href="#/soru-setleri" onclick="closeModal()">Soru setlerini yönet →</a></div>
+
     <div style="margin-bottom:12px"><label>Not / kapsam</label><textarea name="notes"></textarea></div>
-    <div class="actions" style="justify-content:flex-end"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Oluştur</button></div></form>`, (box) => {
+    <div class="actions" style="justify-content:space-between;align-items:center"><span class="small muted" id="total"></span>
+      <div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Oluştur</button></div></div></form>`, (box) => {
+    box.style.maxWidth = "860px";
+    const sbRoot = box.querySelector("#sb");
+    const sb = sectionBuilder(sbRoot);
+    const update = () => {
+      const chosen = [...box.querySelectorAll("input[name=qs]:checked")].map((c) => sets.find((x) => x.id == c.value));
+      const n = chosen.reduce((a, x) => a + x.question_count, 0) + sb.count();
+      box.querySelector("#total").textContent = `Toplam ${n} soru · ${chosen.length} set${sb.count() ? " + özel sorular" : ""}`;
+      box.querySelector("#saveRow").classList.toggle("hidden", !sb.count());
+    };
+    sbRoot.addEventListener("change", update);
+    sbRoot.addEventListener("click", () => setTimeout(update));
+    box.querySelectorAll("input[name=qs]").forEach((c) => (c.onchange = update));
+    update();
     box.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const d = formData(e.target);
+      delete d.qs;
       const sid = supplierId || d.supplier_id; delete d.supplier_id;
+      const err = sb.validate();
+      if (err) return toast(err);
+      d.question_set_ids = [...box.querySelectorAll("input[name=qs]:checked")].map((c) => +c.value);
+      d.custom_sections = sb.get();
+      if (!d.question_set_ids.length && !d.custom_sections.length) return toast("En az bir soru seti seçin veya özel soru ekleyin.");
+      if (box.querySelector("#saveChk").checked) {
+        d.save_custom_as = box.querySelector("#saveName").value.trim();
+        if (!d.save_custom_as) return toast("Kütüphaneye kaydetmek için set adı girin.");
+      }
       try {
         const a = await api(`/api/suppliers/${sid}/audits`, { method: "POST", body: d });
         closeModal(); location.hash = `#/denetim/${a.id}`;
@@ -319,20 +409,85 @@ function auditForm(supplierId, suppliers) {
   });
 }
 
+// ================================================================ SORU SETLERİ
+async function viewQuestionSets() {
+  const sets = await api("/api/question-sets");
+  const card = (x) => `<div class="card qs-card">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+        <div><a href="#/soru-seti/${x.id}"><b>${esc(x.name)}</b></a> <span class="badge ${x.builtin ? "" : "b-ok"}">${esc(x.standard || "Özel")}</span></div>
+        ${x.builtin ? `<span class="small muted">Standart</span>` : ""}</div>
+      <div class="small muted" style="margin:6px 0">${esc(x.description || "")}</div>
+      <div class="small">${x.sections.length} bölüm · <b>${x.question_count}</b> soru${x.used_in ? ` · ${x.used_in} denetimde kullanıldı` : ""}</div>
+      <div class="actions" style="margin-top:10px"><a class="btn sm" href="#/soru-seti/${x.id}">${x.builtin ? "Görüntüle" : "Düzenle"}</a>
+        <button class="sm" data-clone="${x.id}">Kopyala</button></div></div>`;
+  $app.innerHTML = `<div class="page-head"><div><h1>Soru Setleri</h1><div class="muted">Denetimlerde kullanılacak standart ve özel soru setleri</div></div>
+    <div class="actions"><a class="btn primary" href="#/soru-seti/yeni">+ Yeni özel set</a></div></div>
+    <h2>Standart setler</h2><div class="qs-grid">${sets.filter((x) => x.builtin).map(card).join("")}</div>
+    <h2 style="margin-top:8px">Özel setlerim</h2>
+    ${sets.some((x) => !x.builtin) ? `<div class="qs-grid">${sets.filter((x) => !x.builtin).map(card).join("")}</div>`
+      : `<div class="card empty">Henüz özel set yok. Sıfırdan oluşturabilir veya bir standart seti kopyalayıp kendinize göre düzenleyebilirsiniz.</div>`}
+    <div class="card small muted">Standart setlerdeki sorular ilgili standardın maddelerine göre hazırlanmış özet denetim sorularıdır (madde numaraları parantez içinde); standardın resmi metni yerine geçmez. Standart setler değiştirilemez, kopyalayarak uyarlayabilirsiniz. Bir set sonradan değişse de, daha önce planlanmış denetimler kendi soru kopyalarını korur.</div>`;
+  $app.querySelectorAll("[data-clone]").forEach((b) => (b.onclick = async () => {
+    const c = await api(`/api/question-sets/${b.dataset.clone}/clone`, { method: "POST" });
+    toast("Kopya oluşturuldu, düzenleyebilirsiniz"); location.hash = `#/soru-seti/${c.id}`;
+  }));
+}
+
+async function viewQuestionSet(id) {
+  const isNew = id === "yeni";
+  const x = isNew ? { name: "", standard: "Özel", description: "", sections: [], builtin: false } : await api(`/api/question-sets/${id}`);
+  const head = `<div class="small"><a href="#/soru-setleri">← Soru setleri</a></div>`;
+  if (x.builtin) {
+    $app.innerHTML = `<div class="page-head"><div>${head}<h1>${esc(x.name)}</h1><div class="muted">${esc(x.description || "")}</div></div>
+      <div class="actions"><button class="primary" id="clone">Kopyala ve düzenle</button></div></div>
+      ${x.sections.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}</span></h2>
+        <ol style="margin:0;padding-left:20px">${sec.questions.map((q) => `<li style="margin-bottom:4px">${esc(q.text)}</li>`).join("")}</ol></div>`).join("")}`;
+    document.getElementById("clone").onclick = async () => {
+      const c = await api(`/api/question-sets/${x.id}/clone`, { method: "POST" }); location.hash = `#/soru-seti/${c.id}`;
+    };
+    return;
+  }
+  $app.innerHTML = `<div class="page-head"><div>${head}<h1>${isNew ? "Yeni özel soru seti" : "Soru setini düzenle"}</h1></div>
+    <div class="actions">${isNew ? "" : `<button class="danger" id="del">Sil</button>`}<button class="primary" id="save">Kaydet</button></div></div>
+    <div class="card"><div class="row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+      <div><label>Set adı *</label><input id="n" value="${esc(x.name)}" placeholder="ör. Depo ve Lojistik Denetimi"></div>
+      <div><label>Standart / etiket</label><input id="st" value="${esc(x.standard || "Özel")}" placeholder="ör. Özel, TISAX, SOC 2"></div></div>
+      <div style="margin-top:12px"><label>Açıklama</label><textarea id="ds" style="min-height:50px">${esc(x.description || "")}</textarea></div></div>
+    <div class="card"><h2>Bölümler ve sorular</h2><div class="small muted" style="margin-bottom:10px">Her satır bir sorudur. Ağırlık, bölümün toplam puana etkisini belirler (ör. 30 ve 10 ağırlıklı iki bölümde ilki 3 kat etkilidir).</div><div id="sb"></div></div>`;
+  const sb = sectionBuilder(document.getElementById("sb"), x.sections.length ? x.sections : [{ title: "", weight: 10, questions: [] }]);
+  document.getElementById("save").onclick = async () => {
+    const body = { name: document.getElementById("n").value.trim(), standard: document.getElementById("st").value.trim() || "Özel",
+      description: document.getElementById("ds").value.trim() || null, sections: sb.get() };
+    if (!body.name) return toast("Set adı gerekli.");
+    const err = sb.validate(); if (err) return toast(err);
+    if (!body.sections.length) return toast("En az bir bölüm ve soru ekleyin.");
+    try {
+      const r = await api(isNew ? "/api/question-sets" : `/api/question-sets/${x.id}`, { method: isNew ? "POST" : "PUT", body });
+      toast("Kaydedildi"); if (isNew) location.hash = `#/soru-seti/${r.id}`;
+    } catch (e) { toast(e.message); }
+  };
+  const del = document.getElementById("del");
+  if (del) del.onclick = async () => {
+    if (!confirm("Bu soru seti silinsin mi? (Bu setle yapılmış denetimler etkilenmez.)")) return;
+    await api(`/api/question-sets/${x.id}`, { method: "DELETE" }); location.hash = "#/soru-setleri";
+  };
+}
+
 async function viewAudit(id) {
   const a = await api(`/api/audits/${id}`);
   const answers = { ...a.answers };
   const opts = [["uygun", "Uygun"], ["kısmen", "Kısmen"], ["uygun değil", "Uygun değil"], ["na", "N/A"]];
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikci/${a.supplier_id}/denetimler">← ${esc(a.supplier_name)}</a></div>
-    <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")}</div></div>
+    <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")}</div>
+    <div class="chips" style="margin-top:6px">${(a.set_names || []).map((n) => `<span class="badge">${esc(n)}</span>`).join("")}</div></div>
     <div class="actions"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></div></div>
   <div class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start" id="lay">
-    <div>${META.checklist.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık %${sec.weight}</span></h2>
+    <div>${a.checklist.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}${(a.set_names || []).length > 1 && sec.source ? " · " + esc(sec.source) : ""}</span></h2>
       ${sec.questions.map((q) => `<div class="q" data-q="${q.id}"><div>${esc(q.text)}</div>
         <div class="seg">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${answers[q.id]?.answer === v ? "on" : ""}">${l}</button>`).join("")}</div>
         <input class="note" placeholder="Not / kanıt" value="${esc(answers[q.id]?.note || "")}"></div>`).join("")}</div>`).join("")}</div>
-    <div style="position:sticky;top:72px">
+    <div style="position:sticky;top:72px;max-height:calc(100vh - 88px);overflow-y:auto">
       <div class="card"><h2>Sonuç</h2><div id="res"></div></div>
       <div class="card"><label>Durum</label><select id="st">${["planlandı", "devam ediyor", "tamamlandı"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>
         <label style="margin-top:10px">Genel notlar</label><textarea id="nt">${esc(a.notes || "")}</textarea>
@@ -345,7 +500,7 @@ async function viewAudit(id) {
     // istemci tarafı canlı önizleme (sunucu ile aynı formül)
     const pts = { uygun: 1, kısmen: 0.5, "uygun değil": 0 };
     let tot = 0, tw = 0, answered = 0, total = 0;
-    const secs = META.checklist.map((sec) => {
+    const secs = a.checklist.map((sec) => {
       const p = sec.questions.map((q) => answers[q.id]?.answer).filter((x) => x in pts).map((x) => pts[x]);
       total += sec.questions.length; answered += sec.questions.filter((q) => answers[q.id]?.answer).length;
       const pct = p.length ? (100 * p.reduce((x, y) => x + y, 0)) / p.length : null;
@@ -556,7 +711,8 @@ async function viewReport(id) {
       <div class="kpi"><div class="l">Açık bulgu</div><div class="v">${sm.open_findings}</div><div class="l">${sm.critical_findings} kritik · ${sm.overdue_findings} gecikmiş</div></div></div>
     <div class="small muted">Genel puan = denetim puanı × %60 + siber güvenlik puanı × %40 (mevcut olanlar üzerinden).</div></div>
   ${ad ? `<div class="card"><h2>Son denetim — ${fmtDate(ad.audit_date)} (${esc(ad.audit_type)}, ${esc(ad.auditor || "—")})</h2>
-    <table><thead><tr><th>Bölüm</th><th>Puan</th></tr></thead><tbody>${ad.result.sections.map((x) => `<tr><td>${esc(x.title)}</td><td style="width:50%">${meter(x.score == null ? null : Math.round(x.score))}</td></tr>`).join("")}</tbody></table>
+    <div class="small muted" style="margin:-6px 0 10px">Soru setleri: ${esc((ad.set_names || []).join(", "))}</div>
+    <table><thead><tr><th>Bölüm</th><th>Puan</th></tr></thead><tbody>${ad.result.sections.map((x) => `<tr><td>${esc(x.title)}${(ad.set_names || []).length > 1 && x.source ? ` <span class="muted small">· ${esc(x.source)}</span>` : ""}</td><td style="width:50%">${meter(x.score == null ? null : Math.round(x.score))}</td></tr>`).join("")}</tbody></table>
     ${ad.notes ? `<h3>Denetçi notları</h3><div style="white-space:pre-wrap">${esc(ad.notes)}</div>` : ""}</div>` : `<div class="card muted">Tamamlanmış denetim yok.</div>`}
   <div class="card"><h2>Siber güvenlik özeti</h2>${s.scans.length ? `<table><thead><tr><th>Domain</th><th>Not</th><th>Puan</th><th>Başarısız kontroller</th></tr></thead><tbody>
     ${s.scans.map((x) => `<tr><td>${esc(x.domain)}</td><td>${gradeBox(x.grade)}</td><td>${num(x.score)}</td><td class="small">${x.result.checks.filter((c) => c.status === "fail").map((c) => esc(c.title)).join(", ") || "—"}</td></tr>`).join("")}</tbody></table>`

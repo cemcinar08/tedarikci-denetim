@@ -72,34 +72,36 @@ CHECKLIST = [
 ANSWER_POINTS = {"uygun": 1.0, "kısmen": 0.5, "uygun değil": 0.0}
 
 
-def all_question_ids() -> set[str]:
-    return {qid for sec in CHECKLIST for qid, _ in sec["questions"]}
+def compute_score(answers: dict[str, str], sections: list[dict] | None = None) -> dict:
+    """Cevaplardan bölüm puanlarını ve ağırlıklı toplam puanı (0-100) hesaplar.
 
-
-def question_text(qid: str) -> str:
-    for sec in CHECKLIST:
-        for q, text in sec["questions"]:
-            if q == qid:
-                return text
-    return qid
-
-
-def compute_score(answers: dict[str, str]) -> dict:
-    """Cevaplardan bölüm puanlarını ve ağırlıklı toplam puanı (0-100) hesaplar."""
-    sections = []
+    sections: [{id, title, weight, questions: [{id, text}]}]. Verilmezse varsayılan CHECKLIST kullanılır.
+    """
+    if sections is None:
+        sections = legacy_sections()
+    out = []
     total_w = 0.0
     total = 0.0
-    for sec in CHECKLIST:
-        pts = [ANSWER_POINTS[answers[q]] for q, _ in sec["questions"] if answers.get(q) in ANSWER_POINTS]
+    for sec in sections:
+        qids = [q["id"] for q in sec["questions"]]
+        pts = [ANSWER_POINTS[answers[q]] for q in qids if answers.get(q) in ANSWER_POINTS]
+        w = float(sec.get("weight") or 1)
         if pts:
             pct = 100 * sum(pts) / len(pts)
-            total += pct * sec["weight"]
-            total_w += sec["weight"]
+            total += pct * w
+            total_w += w
         else:
             pct = None
-        sections.append({"id": sec["id"], "title": sec["title"], "score": pct, "answered": len(pts)})
+        out.append({"id": sec["id"], "title": sec["title"], "score": pct, "answered": len(pts),
+                    "questions": len(qids), "source": sec.get("source")})
     overall = round(total / total_w, 1) if total_w else None
-    return {"score": overall, "rating": rating(overall), "sections": sections}
+    return {"score": overall, "rating": rating(overall), "sections": out}
+
+
+def legacy_sections() -> list[dict]:
+    """Soru seti özelliğinden önce oluşturulan denetimler için (soru id'leri önek almaz)."""
+    return [{"id": sec["id"], "title": sec["title"], "weight": sec["weight"], "source": "Genel Tedarikçi Denetimi",
+             "questions": [{"id": q, "text": t} for q, t in sec["questions"]]} for sec in CHECKLIST]
 
 
 def rating(score):

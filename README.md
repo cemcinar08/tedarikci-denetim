@@ -4,8 +4,13 @@ Tedarikçi denetimi, bulgu/DÖF takibi ve **dış istihbarat** (domain'lerin dı
 
 ## Özellikler
 - **Tedarikçiler**: firma bilgileri, kritiklik, durum, domain listesi
-- **Denetim kontrol listesi**: 7 bölüm / 27 soru (Kalite, İSG, Çevre, Bilgi Güvenliği, KVKK, Süreklilik, Etik), ağırlıklı puanlama
-  (Uygun = 1, Kısmen = 0,5, Uygun değil = 0, N/A hesaba katılmaz) → *Onaylı / Şartlı Onaylı / Gelişim Gerekli / Onaysız*
+- **Soru setleri**: Denetim planlanırken özel sorular yazılabilir ve/veya bir ya da birden fazla standart set seçilebilir;
+  seçilenler tek denetimde birleşir. Hazır setler: Genel Tedarikçi Denetimi, **PCI DSS v4.0**, **ISO/IEC 27001:2022**,
+  **ISO 9001:2015**, **ISO 14001:2015**, **ISO 45001:2018**, **KVKK**. "Soru Setleri" sayfasından özel set oluşturulabilir,
+  standart setler kopyalanıp uyarlanabilir. Her denetim, oluşturulduğu andaki soruların kopyasını saklar; set sonradan
+  değişse de eski denetimler bozulmaz.
+- **Puanlama**: bölüm ağırlıklı (Uygun = 1, Kısmen = 0,5, Uygun değil = 0, N/A hesaba katılmaz)
+  → *Onaylı / Şartlı Onaylı / Gelişim Gerekli / Onaysız*
 - **Bulgular & aksiyonlar**: denetim cevaplarından veya taramalardan otomatik bulgu, önem bazlı termin
   (kritik 7, yüksek 30, orta 60, düşük 90 gün), sorumlu, durum, gecikme takibi, CSV dışa aktarma
 - **Dış istihbarat** (yalnızca pasif / herkese açık kaynaklar):
@@ -45,7 +50,8 @@ Komut satırından tek domain taraması: `python -m app.intel.scanner ornekfirma
 Veritabanı: `data/denetim.db` (SQLite). Farklı konum için `TD_DB_PATH` ortam değişkeni.
 
 ## Özelleştirme
-- Kontrol listesi soruları ve ağırlıkları: `app/checklist.py`
+- Standart soru setleri: `app/question_sets.py` (uygulama açılışında veritabanına yüklenir/güncellenir)
+- Özel setler: arayüzde **Soru Setleri** sayfası
 - Tarama kontrolleri, ağırlıkları, riskli port listesi: `app/intel/scanner.py`
 - Genel puan / risk kuralları: `app/main.py` → `_summary()`
 
