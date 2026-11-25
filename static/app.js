@@ -98,6 +98,7 @@ const routes = [
   [/^#\/capa$/, viewCapaList],
   [/^#\/capa\/(\d+)$/, viewCapa],
   [/^#\/onaylar$/, viewApprovals],
+  [/^#\/alarmlar$/, viewAlerts],
 ];
 
 async function router() {
@@ -139,8 +140,9 @@ async function boot() {
   const um = document.getElementById("usermenu");
   um.classList.remove("hidden");
   um.innerHTML = `<div class="who"><b>${esc(ME.name)}</b><div class="small muted">${esc(ME.role_title)}${ME.supplier_name ? " · " + esc(ME.supplier_name) : ""}</div></div>
-    ${themeButton()}<button class="sm" id="pw">Parola</button><button class="sm" id="logout">Çıkış</button>`;
+    ${can("alerts:read") ? `<a class="btn sm" href="#/alarmlar" id="bell" title="Alarmlar">🔔 <span id="bellc"></span></a>` : ""}${themeButton()}<button class="sm" id="pw">Parola</button><button class="sm" id="logout">Çıkış</button>`;
   bindTheme(um);
+  if (can("alerts:read")) { refreshBell(); setInterval(refreshBell, 300000); }
   document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.hash = "#/"; location.reload(); };
   document.getElementById("pw").onclick = passwordForm;
   applyPerms();
@@ -639,6 +641,7 @@ async function viewSettings() {
     <div class="actions" style="margin-top:12px;align-items:center"><span>Durum: ${st.smtp_ready ? `<span class="badge b-ok">hazır</span>` : `<span class="badge b-warn">yapılandırılmadı</span>`}</span>
       <input id="testTo" placeholder="Test alıcısı (e-posta)" style="width:260px"><button type="button" id="test">Test e-postası gönder</button></div></div>
   <div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
+  <div class="card" style="margin-top:16px" id="schcard"></div>
   <div class="card" style="margin-top:16px" id="wcard"></div>
   <div class="card" style="margin-top:16px" id="sancard"></div>
   <div class="card" style="margin-top:16px" id="whcard"></div>
@@ -652,6 +655,7 @@ async function viewSettings() {
     <p>Tedarikçinin "aksiyon planlandı" veya "giderildi" yanıtı, açık bulguyu "devam ediyor" durumuna alır. Bulguyu kapatmak (doğrulamak) her zaman sizin kararınızdır.</p></div></div>`;
   webhookAdmin(document.getElementById("whcard"));
   weightsAdmin(document.getElementById("wcard"));
+  schedulerAdmin(document.getElementById("schcard"));
   sanctionsAdmin(document.getElementById("sancard"));
   document.getElementById("sf").onsubmit = async (e) => {
     e.preventDefault();
@@ -1878,4 +1882,56 @@ async function pendingAssessments() {
   return `<div class="card" style="border-color:var(--warn-bd);background:var(--warn-bg)"><h2>Cevap bekleyen anketler (${list.length})</h2>
     ${list.map((a) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0"><a href="#/denetim/${a.id}"><b>${esc((a.set_names || []).join(", "))}</b></a>
       <span class="small">${statusBadge(a.status)} son tarih <b>${fmtDate(a.due_date)}</b></span></div>`).join("")}</div>`;
+}
+
+
+// ================================================================ ALARMLAR & ZAMANLAYICI
+async function refreshBell() {
+  try { const r = await api("/api/alerts?unread=true&limit=1"); const el = document.getElementById("bellc"); if (el) { el.textContent = r.unread || ""; el.className = r.unread ? "badge b-bad" : ""; } } catch { /* sessiz */ }
+}
+const ALERT_SEV = { kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", bilgi: "" };
+const alertLink = (a) => ({ scan: `#/tarama/${a.entity_id}`, capa: `#/capa/${a.entity_id}`, audit: `#/denetim/${a.entity_id}`, contract: `#/tedarikci/${a.supplier_id}/sozlesmeler`,
+  evidence: `#/tedarikci/${a.supplier_id}/belgeler` }[a.entity] || (a.supplier_id ? `#/tedarikci/${a.supplier_id}` : "#/"));
+
+async function viewAlerts() {
+  const only = store.get("alerts.unread", false);
+  const r = await api(`/api/alerts?unread=${only}`);
+  $app.innerHTML = `<div class="page-head"><div><h1>Alarmlar</h1><div class="muted">Sürekli izleme, gecikmeler, sertifika ve sözleşme bitişleri, otomatik planlamalar</div></div>
+    <div class="actions"><label class="te-small"><input type="checkbox" id="ou" ${only ? "checked" : ""}> Yalnızca okunmamış</label><button id="ra">Tümünü okundu yap</button></div></div>
+    <div class="card flush">${r.items.length ? `<table><thead><tr><th>Önem</th><th>Alarm</th><th>Tür</th><th>Tedarikçi</th><th>Zaman</th><th></th></tr></thead><tbody>
+    ${r.items.map((a) => `<tr style="${a.read_at ? "opacity:.6" : ""}"><td><span class="badge ${ALERT_SEV[a.severity] || ""}">${esc(a.severity)}</span></td>
+      <td><a href="${alertLink(a)}" data-rd="${a.id}"><b>${esc(a.title)}</b></a>${a.detail ? `<div class="small muted">${esc(a.detail)}</div>` : ""}</td>
+      <td class="small">${esc(a.kind)}</td><td class="small">${esc(a.supplier_name || "—")}</td><td class="small">${fmtDT(a.created_at + "Z")}</td>
+      <td>${a.read_at ? "" : `<button class="sm ghost" data-rd2="${a.id}">Okundu</button>`}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Alarm yok.</div>`}</div>`;
+  document.getElementById("ou").onchange = (e) => { store.set("alerts.unread", e.target.checked); router(); };
+  document.getElementById("ra").onclick = () => api("/api/alerts/read-all", { method: "POST" }).then(() => { refreshBell(); router(); });
+  $app.querySelectorAll("[data-rd]").forEach((a) => a.addEventListener("click", () => api(`/api/alerts/${a.dataset.rd}/read`, { method: "POST" }).then(refreshBell)));
+  $app.querySelectorAll("[data-rd2]").forEach((b) => (b.onclick = () => api(`/api/alerts/${b.dataset.rd2}/read`, { method: "POST" }).then(() => { refreshBell(); router(); })));
+}
+
+async function schedulerAdmin(root) {
+  const st = await api("/api/scheduler");
+  const c = st.config;
+  const JOB = { monitor: "Sürekli izleme (domain taraması)", reassess: "Otomatik yeniden değerlendirme", reminders: "Hatırlatmalar ve uyarılar", waivers: "Risk kabulü süreleri" };
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Otomasyon (zamanlayıcı)</h2>
+    <div class="small muted">Uygulama açıkken saatte bir kontrol edilir; her görev günde bir kez çalışır. Uygulama kapalıyken çalışmaz — sunucuda sürekli açık tutarsanız tam otomatik olur.</div></div>
+    <button id="srun">Şimdi çalıştır</button></div>
+  <form id="scf"><div class="row">
+    <div><label class="te-small"><input type="checkbox" name="monitor_enabled" ${c.monitor_enabled ? "checked" : ""}> Sürekli izleme</label><label style="margin-top:6px">Tarama aralığı (saat)</label><input type="number" min="1" name="monitor_interval_hours" value="${c.monitor_interval_hours}"></div>
+    <div><label class="te-small"><input type="checkbox" name="reassess_enabled" ${c.reassess_enabled ? "checked" : ""}> Otomatik yeniden değerlendirme</label><label style="margin-top:6px">Kaç gün önceden planlansın</label><input type="number" min="0" name="reassess_lead_days" value="${c.reassess_lead_days}"></div>
+    <div><label class="te-small"><input type="checkbox" name="reminders_enabled" ${c.reminders_enabled ? "checked" : ""}> Tedarikçiye hatırlatma e-postası</label><label style="margin-top:6px">En sık (gün)</label><input type="number" min="1" name="reminder_every_days" value="${c.reminder_every_days}"></div>
+  </div><div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
+  <table class="dense small" style="margin-top:8px"><tbody>${Object.entries(st.jobs).map(([k, j]) => `<tr><td>${JOB[k]}</td><td>${j.last_run ? fmtDT(j.last_run) : `<span class="muted">henüz çalışmadı</span>`}</td>
+    <td class="muted">${j.result ? esc(Object.entries(j.result).map(([a, b]) => `${a}: ${b}`).join(", ")) : ""}</td></tr>`).join("")}</tbody></table>`;
+  const f = root.querySelector("#scf");
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const d = {}; for (const el of f.elements) if (el.name) d[el.name] = el.type === "checkbox" ? el.checked : +el.value;
+    try { await api("/api/scheduler", { method: "PUT", body: d }); toast("Kaydedildi"); } catch (err) { toast(err.message); }
+  };
+  root.querySelector("#srun").onclick = async (e) => {
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> Çalışıyor…`;
+    try { const r = await api("/api/scheduler/run", { method: "POST" }); toast("Tamamlandı: " + Object.keys(r.ran).join(", "), 5000); refreshBell(); } catch (err) { toast(err.message); }
+    schedulerAdmin(root);
+  };
 }

@@ -8,6 +8,7 @@
 - `app/auth.py` — kullanıcı, oturum, RBAC middleware, satır izolasyonu (`scope`)
 - `app/templates_engine.py` — koşullu soru + puanlama/kill-switch (saf); `app/template_store.py` — şablon DB erişimi
 - `app/capa.py`, `app/evidence.py`, `app/events.py`, `app/summary.py`, `app/notify.py` — servisler
+- `app/scheduler.py` — arka plan görevleri (izleme, yeniden değerlendirme, hatırlatma) ve alarm merkezi
 - `app/assessments.py` — tedarikçi öz-değerlendirmesi (gönder/cevapla/incele)
 - `app/exceptions.py` — bulgu itirazı / risk kabulü onay akışı
 - `app/lifecycle.py` — kabul/doğal risk, çıkarma, sözleşmeler

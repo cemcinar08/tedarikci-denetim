@@ -1,4 +1,8 @@
+import os
+
 import pytest
+
+os.environ["TD_SCHEDULER"] = "0"  # testlerde arka plan zamanlayıcısı çalışmasın
 from fastapi.testclient import TestClient
 
 PW = "parola1234"

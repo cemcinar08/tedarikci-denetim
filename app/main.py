@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import assessments, capa, events, evidence, exceptions, importer, lifecycle, risk, summary
+from . import assessments, capa, events, evidence, exceptions, importer, lifecycle, risk, scheduler, summary
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -29,7 +29,9 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 @asynccontextmanager
 async def lifespan(_app):
     init_db()
+    scheduler.start()
     yield
+    scheduler.stop()
 
 
 app = FastAPI(title="Tedarikçi Denetim", version="2.0", lifespan=lifespan)
@@ -736,6 +738,7 @@ app.include_router(importer.router)
 app.include_router(lifecycle.router)
 app.include_router(exceptions.router)
 app.include_router(assessments.router)
+app.include_router(scheduler.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

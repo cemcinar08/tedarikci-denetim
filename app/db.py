@@ -374,6 +374,29 @@ CREATE TABLE IF NOT EXISTS capa_comments (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ---------------------------------------------------------------- Alarmlar ve hatırlatmalar
+CREATE TABLE IF NOT EXISTS alerts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    severity     TEXT NOT NULL,          -- kritik / yüksek / orta / bilgi
+    title        TEXT NOT NULL,
+    detail       TEXT,
+    entity       TEXT,
+    entity_id    TEXT,
+    dedupe_key   TEXT UNIQUE,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    read_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_unread ON alerts(read_at, id);
+
+CREATE TABLE IF NOT EXISTS reminders_sent (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    items        INTEGER NOT NULL,
+    sent_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT

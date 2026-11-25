@@ -33,13 +33,13 @@ ROLES: dict[str, dict] = {
         "supplier:read", "supplier:write", "audit:read", "audit:write", "template:read", "template:write",
         "finding:read", "finding:write", "capa:read", "capa:write", "capa:review", "evidence:read", "evidence:write",
         "intel:scan", "notify:send", "report:read", "summary:read", "settings:read", "contract:read", "contract:write",
-        "finding:dispute", "capa:comment"]},
+        "finding:dispute", "capa:comment", "alerts:read"]},
     "supplier": {"title": "Tedarikçi", "perms": [
         "supplier:read", "audit:read", "finding:read", "capa:read", "capa:submit", "evidence:read", "evidence:write",
         "report:read", "summary:read", "finding:dispute", "capa:comment", "assessment:respond"]},
     "viewer": {"title": "İzleyici", "perms": [
         "supplier:read", "audit:read", "template:read", "finding:read", "capa:read", "evidence:read",
-        "report:read", "summary:read", "contract:read"]},
+        "report:read", "summary:read", "contract:read", "alerts:read"]},
 }
 
 # (yöntem, yol deseni, gereken yetki). None = giriş yapmış herkes. Sıra önemlidir; ilk eşleşen kullanılır.
@@ -104,6 +104,8 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     # yönetim
     ("GET", r"/api/users", "user:manage"), ("POST", r"/api/users", "user:manage"),
     ("PUT", rf"/api/users/{_R}", "user:manage"), ("DELETE", rf"/api/users/{_R}", "user:manage"),
+    ("GET", r"/api/alerts", "alerts:read"), ("POST", rf"/api/alerts/({_R}/read|read-all)", "alerts:read"),
+    ("GET", r"/api/scheduler", "settings:manage"), ("PUT", r"/api/scheduler", "settings:manage"), ("POST", r"/api/scheduler/run", "settings:manage"),
     ("GET", r"/api/roles", "user:manage"), ("GET", r"/api/audit-logs", "auditlog:read"),
 ]
 _COMPILED = [(m, re.compile(f"^{p}$"), perm) for m, p, perm in PERMS]

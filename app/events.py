@@ -24,7 +24,8 @@ from .db import get_db, row, rows
 
 router = APIRouter()
 EVENT_TYPES = ["finding.created", "finding.status_changed", "capa.created", "capa.submitted", "capa.approved",
-               "capa.rejected", "capa.commented", "audit.completed", "assessment.sent", "assessment.submitted"]
+               "capa.rejected", "capa.commented", "audit.completed", "assessment.sent", "assessment.submitted",
+               "alert.created"]
 MAX_ATTEMPTS = 3
 
 
@@ -125,7 +126,7 @@ class SubscriptionIn(BaseModel):
     @field_validator("events")
     @classmethod
     def _events(cls, v):
-        allowed = set(EVENT_TYPES) | {"*", "finding.*", "capa.*", "audit.*"}
+        allowed = set(EVENT_TYPES) | {"*", "finding.*", "capa.*", "audit.*", "assessment.*", "alert.*"}
         bad = [e for e in v if e not in allowed]
         if bad or not v:
             raise ValueError(f"Geçersiz olay türü: {', '.join(bad) or '(boş)'}")
