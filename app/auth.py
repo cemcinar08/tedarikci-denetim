@@ -36,7 +36,7 @@ ROLES: dict[str, dict] = {
         "finding:dispute", "capa:comment"]},
     "supplier": {"title": "Tedarikçi", "perms": [
         "supplier:read", "audit:read", "finding:read", "capa:read", "capa:submit", "evidence:read", "evidence:write",
-        "report:read", "summary:read", "finding:dispute", "capa:comment"]},
+        "report:read", "summary:read", "finding:dispute", "capa:comment", "assessment:respond"]},
     "viewer": {"title": "İzleyici", "perms": [
         "supplier:read", "audit:read", "template:read", "finding:read", "capa:read", "evidence:read",
         "report:read", "summary:read", "contract:read"]},
@@ -73,6 +73,8 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("GET", r"/api/audits", "audit:read"), ("GET", rf"/api/audits/{_R}", "audit:read"),
     ("PUT", rf"/api/audits/{_R}", "audit:write"), ("DELETE", rf"/api/audits/{_R}", "audit:write"),
     ("POST", rf"/api/audits/{_R}/generate-findings", "finding:write"),
+    ("POST", rf"/api/suppliers/{_R}/self-assessments", "audit:write"), ("POST", rf"/api/audits/{_R}/return", "audit:write"),
+    ("PUT", rf"/api/audits/{_R}/respond", "assessment:respond"), ("POST", rf"/api/audits/{_R}/submit", "assessment:respond"),
     ("GET", r"/api/question-sets(/.*)?", "template:read"),
     ("POST", r"/api/question-sets(/.*)?", "template:write"), ("PUT", rf"/api/question-sets/{_R}", "template:write"),
     ("DELETE", rf"/api/question-sets/{_R}", "template:write"),

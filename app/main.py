@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import capa, events, evidence, exceptions, importer, lifecycle, risk, summary
+from . import assessments, capa, events, evidence, exceptions, importer, lifecycle, risk, summary
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -115,7 +115,7 @@ class AuditIn(BaseModel):
     save_custom_as: Optional[str] = None   # doluysa özel sorular kütüphaneye set olarak da kaydedilir
     audit_date: str
     auditor: Optional[str] = None
-    audit_type: Literal["yerinde", "uzaktan", "doküman"] = "yerinde"
+    audit_type: Literal["yerinde", "uzaktan", "doküman", "öz-değerlendirme"] = "yerinde"
     status: Literal["planlandı", "devam ediyor", "tamamlandı"] = "planlandı"
     notes: Optional[str] = None
 
@@ -128,7 +128,7 @@ class AnswerIn(BaseModel):
 class AuditUpdate(BaseModel):
     audit_date: Optional[str] = None
     auditor: Optional[str] = None
-    audit_type: Optional[Literal["yerinde", "uzaktan", "doküman"]] = None
+    audit_type: Optional[Literal["yerinde", "uzaktan", "doküman", "öz-değerlendirme"]] = None
     status: Optional[Literal["planlandı", "devam ediyor", "tamamlandı"]] = None
     notes: Optional[str] = None
     answers: Optional[dict[str, AnswerIn]] = None
@@ -735,6 +735,7 @@ app.include_router(risk.router)
 app.include_router(importer.router)
 app.include_router(lifecycle.router)
 app.include_router(exceptions.router)
+app.include_router(assessments.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

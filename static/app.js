@@ -60,7 +60,7 @@ const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v
 // ---------------------------------------------------------------- rozetler
 const riskBadge = (r) => riskPill(r);
 const sevBadge = (s) => `<span class="badge ${{ kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", düşük: "" }[s] || ""}">${esc(s)}</span>`;
-const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "", aday: "b-warn", "çıkış sürecinde": "b-bad", "risk kabul edildi": "" }[s] ?? ""}">${esc(s)}</span>`;
+const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", gönderildi: "b-warn", yanıtlanıyor: "b-warn", incelemede: "b-warn", "revizyon istendi": "b-bad", aktif: "b-ok", askıda: "b-warn", pasif: "", aday: "b-warn", "çıkış sürecinde": "b-bad", "risk kabul edildi": "" }[s] ?? ""}">${esc(s)}</span>`;
 const checkBadge = (s) => {
   const m = { pass: ["b-ok", "Geçti"], warn: ["b-warn", "Uyarı"], fail: ["b-bad", "Başarısız"], info: ["", "Bilgi"], error: ["", "Ölçülemedi"] }[s] || ["", s];
   return `<span class="badge ${m[0]}">${m[1]}</span>`;
@@ -215,6 +215,7 @@ async function viewDashboard() {
   const metric = (label, value, sub = "", cls = "", href = null) =>
     `<${href ? `a href="${href}"` : "div"} class="metric"><div class="l">${label}</div><div class="v ${cls}">${value}</div><div class="s">${sub || "&nbsp;"}</div></${href ? "a" : "div"}>`;
   $app.innerHTML = `
+  ${isSupplier() ? await pendingAssessments() : ""}
   <div class="page-head"><div><h1>Genel bakış</h1><div class="muted">${isSupplier() ? esc(ME.supplier_name || "") + " · " : ""}${new Date().toLocaleDateString("tr-TR", { dateStyle: "long" })}</div></div>
     <div class="actions">${can("report:read") ? `<button id="exp">CSV dışa aktar</button>` : ""}<a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">Tedarikçi ekle</a></div></div>
   <div class="metric-strip">
@@ -405,7 +406,7 @@ async function viewSupplier(id, tab = "ozet") {
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
     <h1>${esc(s.name)}</h1><div class="muted">${esc([s.category, s.country, s.tier_name].filter(Boolean).join(" · ") || "—")} · Kritiklik: <b>${esc(s.criticality)}</b> · ${statusBadge(s.status)}</div></div>
-    <div class="actions">${["aktif", "askıda"].includes(s.status) ? `<button id="offb" data-perm="supplier:write">Çıkarma sürecini başlat</button>` : ""}<button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
+    <div class="actions">${["aktif", "askıda"].includes(s.status) ? `<button id="offb" data-perm="supplier:write">Çıkarma sürecini başlat</button>` : ""}<button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button id="newSelf" data-perm="audit:write">Öz-değerlendirme gönder</button><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
   <div class="kpis">
     <div class="kpi"><div class="l">Risk seviyesi</div><div class="v">${riskBadge(sm.risk)}</div></div>
     <div class="kpi"><div class="l">Genel puan</div><div class="v" style="color:${sm.audit_decision === "rejected" ? "var(--crit)" : scoreColor(sm.overall_score)}">${num(sm.overall_score)}</div></div>
@@ -419,6 +420,7 @@ async function viewSupplier(id, tab = "ozet") {
   document.getElementById("edit").onclick = () => supplierForm(s);
   lifecycleBanner(s);
   document.getElementById("newAudit").onclick = () => auditForm(s.id);
+  document.getElementById("newSelf").onclick = () => auditForm(s.id, null, true);
   const T = document.getElementById("tab");
 
   if (tab === "ozet") {
@@ -728,15 +730,18 @@ function sectionBuilder(root, sections = []) {
   };
 }
 
-async function auditForm(supplierId, suppliers) {
+async function auditForm(supplierId, suppliers, selfAssess = false) {
   const sets = await api("/api/question-sets");
   const std = sets.filter((x) => x.builtin), mine = sets.filter((x) => !x.builtin);
   const setCard = (x) => `<label class="set-card"><input type="checkbox" name="qs" value="${x.id}">
       <div><div><b>${esc(x.name)}</b> <span class="badge">${esc(x.standard || "Özel")}</span></div>
       <div class="small muted">${x.question_count} soru · ${x.sections.length} bölüm${x.description ? " · " + esc(x.description) : ""}</div></div></label>`;
-  modal(`<h2>Denetim planla</h2><form id="f">
+  modal(`<h2>${selfAssess ? "Öz-değerlendirme anketi gönder" : "Denetim planla"}</h2><form id="f">
+    <div class="tabs" id="mode"><button type="button" data-m="0" class="${selfAssess ? "" : "active"}">Denetçi yapacak (denetim)</button><button type="button" data-m="1" class="${selfAssess ? "active" : ""}">Tedarikçi cevaplayacak (öz-değerlendirme)</button></div>
+    <div id="selfrow" class="row ${selfAssess ? "" : "hidden"}"><div><label>Son yanıt tarihi</label><input type="date" name="due_date" value="${new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10)}"></div>
+      <div style="grid-column:span 2"><div class="small muted" style="margin-top:20px">Anket tedarikçi portalına düşer; bildirim e-postası tanımlıysa e-posta da gider. Tedarikçi cevaplayıp gönderince size incelemeye gelir.</div></div></div>
     ${suppliers ? `<div style="margin-bottom:12px"><label>Tedarikçi</label><select name="supplier_id">${suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}</select></div>` : ""}
-    <div class="row"><div><label>Tarih</label><input type="date" name="audit_date" required value="${todayISO()}"></div>
+    <div class="row" id="auditrow" ${selfAssess ? 'style="display:none"' : ""}><div><label>Tarih</label><input type="date" name="audit_date" value="${todayISO()}"></div>
       <div><label>Tür</label><select name="audit_type"><option>yerinde</option><option>uzaktan</option><option>doküman</option></select></div>
       <div><label>Denetçi</label><input name="auditor"></div>
       <div><label>Durum</label><select name="status"><option>planlandı</option><option>devam ediyor</option></select></div></div>
@@ -757,6 +762,14 @@ async function auditForm(supplierId, suppliers) {
     <div class="actions" style="justify-content:space-between;align-items:center"><span class="small muted" id="total"></span>
       <div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Oluştur</button></div></div></form>`, (box) => {
     box.style.maxWidth = "860px";
+    let isSelf = selfAssess;
+    box.querySelectorAll("#mode [data-m]").forEach((b) => (b.onclick = () => {
+      isSelf = b.dataset.m === "1";
+      box.querySelectorAll("#mode [data-m]").forEach((x) => x.classList.toggle("active", x === b));
+      box.querySelector("#selfrow").classList.toggle("hidden", !isSelf);
+      box.querySelector("#auditrow").style.display = isSelf ? "none" : "";
+      box.querySelector("h2").textContent = isSelf ? "Öz-değerlendirme anketi gönder" : "Denetim planla";
+    }));
     const sbRoot = box.querySelector("#sb");
     const sb = sectionBuilder(sbRoot);
     const update = () => {
@@ -784,8 +797,10 @@ async function auditForm(supplierId, suppliers) {
         if (!d.save_custom_as) return toast("Kütüphaneye kaydetmek için set adı girin.");
       }
       try {
-        const a = await api(`/api/suppliers/${sid}/audits`, { method: "POST", body: d });
-        closeModal(); location.hash = `#/denetim/${a.id}`;
+        const a = isSelf
+          ? await api(`/api/suppliers/${sid}/self-assessments`, { method: "POST", body: { question_set_ids: d.question_set_ids, custom_sections: d.custom_sections, due_date: d.due_date, message: d.notes } })
+          : await api(`/api/suppliers/${sid}/audits`, { method: "POST", body: { ...d, audit_date: d.audit_date || todayISO() } });
+        closeModal(); toast(isSelf ? "Anket tedarikçiye gönderildi" : "Denetim planlandı"); location.hash = `#/denetim/${a.id}`;
       } catch (err) { toast(err.message); }
     };
   });
@@ -1018,7 +1033,10 @@ async function viewAudit(id) {
   const a = await api(`/api/audits/${id}`);
   const answers = Object.fromEntries(Object.entries(a.answers).map(([k, v]) => [k, v.answer]));
   const notes = Object.fromEntries(Object.entries(a.answers).map(([k, v]) => [k, v.note || ""]));
-  const ro = !can("audit:write");
+  const SELF_EDIT = ["gönderildi", "yanıtlanıyor", "revizyon istendi"];
+  const isSelfA = a.respondent === "tedarikçi";
+  const supplierEdit = isSelfA && isSupplier() && SELF_EDIT.includes(a.status);
+  const ro = !(supplierEdit || (can("audit:write") && !isSupplier()));
   const qtext = Object.fromEntries(a.checklist.flatMap((s) => s.questions.map((q) => [q.id, q.text])));
   const opts = [["uygun", "Uygun"], ["kısmen", "Kısmen"], ["uygun değil", "Uygun değil"], ["na", "N/A"]];
   $app.innerHTML = `
@@ -1026,7 +1044,14 @@ async function viewAudit(id) {
     <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")} · ${statusBadge(a.status)}</div>
     <div class="chips" style="margin-top:6px">${(a.set_names || []).map((n) => `<span class="badge">${esc(n)}</span>`).join("")}</div></div>
     <div class="actions"><a class="btn" data-perm="report:read" href="/api/reports/audits/${a.id}.pdf" target="_blank">PDF</a><a class="btn" data-perm="report:read" href="/api/reports/audits/${a.id}.csv">CSV</a>
-      <span class="actions" data-perm="audit:write"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></span></div></div>
+      ${supplierEdit ? `<button id="sdraft">Taslağı kaydet</button><button class="primary" id="ssubmit">Denetçiye gönder</button>`
+        : `<span class="actions" data-perm="audit:write">${isSelfA && a.status === "incelemede" ? `<button id="ret">Revizyona gönder</button>` : ""}<button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></span>`}</div></div>
+  ${isSelfA ? `<div class="card" style="${a.status === "revizyon istendi" ? "border-color:var(--warn-bd);background:var(--warn-bg)" : "background:var(--muted-bg)"}">
+    <b>Öz-değerlendirme</b> · ${statusBadge(a.status)} · son tarih <b>${fmtDate(a.due_date)}</b>${a.due_date && a.due_date < todayISO() && SELF_EDIT.includes(a.status) ? ` <span class="badge b-bad">gecikti</span>` : ""}
+    ${a.submitted_at ? ` · gönderen ${esc(a.submitted_by || "")} ${fmtDT(a.submitted_at + "Z")}` : ""}
+    ${a.review_comment && a.status === "revizyon istendi" ? `<div style="margin-top:6px"><b>Denetçi notu:</b> ${esc(a.review_comment)}</div>` : ""}
+    ${a.notes ? `<div class="small muted" style="margin-top:4px">${esc(a.notes)}</div>` : ""}
+    ${supplierEdit ? `<div class="small" style="margin-top:6px">Her soruyu cevaplayın, gerekirse not ve kanıt ekleyin. "Taslağı kaydet" ile ara kayıt yapabilir, hazır olunca "Denetçiye gönder"e basın.</div>` : ""}</div>` : ""}
   <div class="small muted" style="margin:-8px 0 12px"><span class="badge b-crit">kritik</span> işaretli maddede "Uygun değil" cevabı, puandan bağımsız olarak denetimi <b>reddeder</b> (kill-switch). ↳ işaretli sorular yalnızca bağlı oldukları sorunun cevabına göre açılır.</div>
   <div class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start" id="lay">
     <div>${a.checklist.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}${(a.set_names || []).length > 1 && sec.source ? " · " + esc(sec.source) : ""}</span></h2>
@@ -1038,7 +1063,7 @@ async function viewAudit(id) {
         <div class="ev-slot" data-ev="${esc(q.id)}"></div></div>`).join("")}</div>`).join("")}</div>
     <div style="position:sticky;top:72px;max-height:calc(100vh - 88px);overflow-y:auto">
       <div class="card"><h2>Sonuç</h2><div id="res"></div></div>
-      <div class="card"><label>Durum</label><select id="st" ${ro ? "disabled" : ""}>${["planlandı", "devam ediyor", "tamamlandı"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <div class="card ${isSupplier() ? "hidden" : ""}"><label>Durum</label><select id="st" ${ro ? "disabled" : ""}>${["planlandı", "devam ediyor", "tamamlandı"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>
         <label style="margin-top:10px">Genel notlar</label><textarea id="nt" ${ro ? "readonly" : ""}>${esc(a.notes || "")}</textarea>
         <div class="small muted" style="margin-top:8px">Denetim <b>tamamlandı</b> olarak kaydedildiğinde uygunsuzluklar için CAPA kayıtları otomatik açılır.</div></div>
       <div id="sidecards"></div>
@@ -1069,6 +1094,21 @@ async function viewAudit(id) {
   });
   if (typeof auditExtras === "function") auditExtras(a);
   if (ro) return;
+  const answerBody = () => Object.fromEntries([...new Set([...Object.keys(answers), ...Object.keys(notes)])].map((k) => [k, { answer: answers[k] || null, note: notes[k] || null }]));
+  if (supplierEdit) {
+    const draft = () => api(`/api/audits/${id}/respond`, { method: "PUT", body: { answers: answerBody() } });
+    document.getElementById("sdraft").onclick = () => draft().then(() => toast("Taslak kaydedildi")).catch((e) => toast(e.message));
+    document.getElementById("ssubmit").onclick = async () => {
+      try { await draft(); await api(`/api/audits/${id}/submit`, { method: "POST" }); toast("Anket denetçiye gönderildi. Teşekkürler!"); router(); }
+      catch (e) { toast(e.message, 7000); }
+    };
+    return;
+  }
+  const ret = document.getElementById("ret");
+  if (ret) ret.onclick = () => {
+    const comment = prompt("Tedarikçiye revizyon notu:");
+    if (comment) api(`/api/audits/${id}/return`, { method: "POST", body: { comment } }).then(() => { toast("Revizyona gönderildi"); router(); }).catch((e) => toast(e.message));
+  };
 
   const save = async () => {
     const body = Object.fromEntries([...new Set([...Object.keys(answers), ...Object.keys(notes)])].map((k) => [k, { answer: answers[k] || null, note: notes[k] || null }]));
@@ -1414,7 +1454,7 @@ function uploadModal(fields, after) {
 // Denetim ekranına kanıt ve CAPA ekleri
 async function auditExtras(a) {
   const [files, caps] = await Promise.all([api(`/api/evidence?audit_id=${a.id}`), can("capa:read") ? api(`/api/capa?audit_id=${a.id}`) : []]);
-  const canUp = can("evidence:write") && !(isSupplier() && a.status === "tamamlandı");
+  const canUp = can("evidence:write") && (!isSupplier() || (a.respondent === "tedarikçi" && ["gönderildi", "yanıtlanıyor", "revizyon istendi"].includes(a.status)));
   const drawSlots = (list) => $app.querySelectorAll(".ev-slot").forEach((slot) => {
     const mine = list.filter((e) => e.question_id === slot.dataset.ev);
     slot.innerHTML = `${mine.length ? `<div class="ev-list">${mine.map((e) => `<a class="chip" href="/api/evidence/${e.id}/download" title="${esc(e.original_name)}">📎 ${esc((e.title || e.original_name).slice(0, 40))}</a>`).join(" ")}</div>` : ""}
@@ -1829,4 +1869,13 @@ async function capaMessages(c) {
   const ml = el.querySelector("#mlist"); ml.scrollTop = ml.scrollHeight;
   const mf = el.querySelector("#mf");
   if (mf) mf.onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/capa/${c.id}/comments`, { method: "POST", body: formData(mf) }); capaMessages(c); } catch (err) { toast(err.message); } };
+}
+
+
+async function pendingAssessments() {
+  const list = (await api("/api/audits")).filter((a) => a.respondent === "tedarikçi" && ["gönderildi", "yanıtlanıyor", "revizyon istendi"].includes(a.status));
+  if (!list.length) return "";
+  return `<div class="card" style="border-color:var(--warn-bd);background:var(--warn-bg)"><h2>Cevap bekleyen anketler (${list.length})</h2>
+    ${list.map((a) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0"><a href="#/denetim/${a.id}"><b>${esc((a.set_names || []).join(", "))}</b></a>
+      <span class="small">${statusBadge(a.status)} son tarih <b>${fmtDate(a.due_date)}</b></span></div>`).join("")}</div>`;
 }

@@ -24,7 +24,7 @@ from .db import get_db, row, rows
 
 router = APIRouter()
 EVENT_TYPES = ["finding.created", "finding.status_changed", "capa.created", "capa.submitted", "capa.approved",
-               "capa.rejected", "capa.commented", "audit.completed"]
+               "capa.rejected", "capa.commented", "audit.completed", "assessment.sent", "assessment.submitted"]
 MAX_ATTEMPTS = 3
 
 

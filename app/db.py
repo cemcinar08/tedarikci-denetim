@@ -429,7 +429,9 @@ CREATE INDEX IF NOT EXISTS idx_scans_supplier ON intel_scans(supplier_id, domain
 
 MIGRATIONS = {
     "audits": {"checklist": "TEXT", "set_names": "TEXT", "template_ids": "TEXT",
-               "risk_level": "TEXT", "decision": "TEXT", "kill_switches": "TEXT", "completed_at": "TEXT"},
+               "risk_level": "TEXT", "decision": "TEXT", "kill_switches": "TEXT", "completed_at": "TEXT",
+               "respondent": "TEXT NOT NULL DEFAULT 'denetçi'",   # denetçi / tedarikçi (öz-değerlendirme)
+               "due_date": "TEXT", "sent_at": "TEXT", "submitted_at": "TEXT", "submitted_by": "TEXT", "review_comment": "TEXT"},
     "suppliers": {
         "tier_id": "INTEGER REFERENCES supplier_tiers(id) ON DELETE SET NULL",
         "notify_emails": "TEXT",                 # virgülle ayrılmış alıcılar
