@@ -598,6 +598,12 @@ def public_respond(token: str, body: ResponseIn, request: Request):
                 "INSERT INTO supplier_responses (notification_id, finding_id, status, comment, planned_date, responder, via) "
                 "VALUES (?,?,?,?,?,?,?)", (n["id"], fid, body.status, body.comment, body.planned_date, body.responder, via))
             if fid is not None:
+                f = db.execute("SELECT id, supplier_id, title, status FROM findings WHERE id=?", (fid,)).fetchone()
+                if f and f["status"] == "açık" and body.status in ("aksiyon planlandı", "giderildi"):
+                    from . import events
+                    events.emit("finding.status_changed", f["supplier_id"], "finding", fid,
+                                {"id": fid, "title": f["title"], "from": "açık", "to": "devam ediyor",
+                                 "reason": f"Tedarikçi yanıtı: {body.status}"}, db)
                 db.execute(
                     "UPDATE findings SET supplier_status=?, supplier_comment=?, supplier_due_date=COALESCE(?, supplier_due_date), "
                     "supplier_updated_at=?, status=CASE WHEN status='açık' AND ? IN ('aksiyon planlandı','giderildi') "

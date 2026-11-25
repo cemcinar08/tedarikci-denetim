@@ -133,10 +133,9 @@ def test_full_flow(client, monkeypatch):
     answers[ids[1]] = {"answer": "kısmen"}
     a = client.put(f"/api/audits/{a['id']}", json={"status": "tamamlandı", "answers": answers}).json()
     assert 80 < a["score"] < 100
+    assert a["capa_created"] == 2  # tamamlanınca uygunsuzluklar için bulgu + CAPA otomatik açılır
     assert client.put(f"/api/audits/{a['id']}", json={"answers": {"yok.1": {"answer": "uygun"}}}).status_code == 422
 
-    g = client.post(f"/api/audits/{a['id']}/generate-findings").json()
-    assert g["created"] == 2
     assert client.post(f"/api/audits/{a['id']}/generate-findings").json()["created"] == 0  # tekrar oluşturmaz
 
     # Dış istihbarat: başarısız kontrol -> bulgu
@@ -213,7 +212,8 @@ def test_question_sets_and_combined_audit(client):
     answers[qids[-1]] = {"answer": "uygun değil"}
     r = client.put(f"/api/audits/{a['id']}", json={"answers": answers, "status": "tamamlandı"}).json()
     assert 0 < r["score"] < 100 and len(r["result"]["sections"]) == len(a["checklist"])
-    assert client.post(f"/api/audits/{a['id']}/generate-findings").json()["created"] == 1
+    assert r["capa_created"] == 1
+    assert client.post(f"/api/audits/{a['id']}/generate-findings").json()["created"] == 0
     f = client.get(f"/api/findings?supplier_id={sid}").json()[0]
     assert f["title"] == "[Sahaya özel] Kamera kayıtları 90 gün saklanıyor mu?"
 

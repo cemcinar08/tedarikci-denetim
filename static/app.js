@@ -95,13 +95,15 @@ const routes = [
   [/^#\/ayarlar$/, viewSettings],
   [/^#\/kullanicilar$/, viewUsers],
   [/^#\/kayitlar$/, viewAuditLogs],
+  [/^#\/capa$/, viewCapaList],
+  [/^#\/capa\/(\d+)$/, viewCapa],
 ];
 
 async function router() {
   if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
   const h = location.hash || "#/";
   const top = h.split("/")[1] || "";
-  const map = { tedarikci: "tedarikciler", denetim: "denetimler", tarama: "istihbarat", rapor: "tedarikciler", "soru-seti": "soru-setleri" };
+  const map = { capa: "capa", tedarikci: isSupplier() ? "" : "tedarikciler", denetim: "denetimler", tarama: "istihbarat", rapor: "tedarikciler", "soru-seti": "soru-setleri" };
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === (map[top] ?? top)));
   for (const [re, fn] of routes) {
     const m = h.match(re);
@@ -306,7 +308,7 @@ async function supplierForm(s = {}, focus = null) {
 async function viewSupplier(id, tab = "ozet") {
   const s = await api(`/api/suppliers/${id}`);
   const sm = s.summary;
-  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
+  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["capa", "CAPA"], ["belgeler", "Sertifikalar"], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
     !(k === "bildirimler" && !can("notify:send")) && !(k === "istihbarat" && isSupplier()));
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
@@ -382,6 +384,22 @@ async function viewSupplier(id, tab = "ozet") {
         router();
       } catch (err) { toast(err.message); b.disabled = false; b.textContent = "Tüm domain'leri tara"; }
     };
+  } else if (tab === "capa") {
+    const list = await api(`/api/capa?supplier_id=${s.id}`);
+    T.innerHTML = `<div class="card">${can("capa:write") ? `<div class="actions" style="margin-bottom:12px"><button id="nc">+ Manuel CAPA</button></div>` : ""}${capaTable(list)}</div>`;
+    const nc = document.getElementById("nc");
+    if (nc) nc.onclick = () => capaForm(s.id);
+  } else if (tab === "belgeler") {
+    T.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Sertifikalar ve belgeler</h2>
+      <div class="small muted">ISO, TSE, CE vb. sertifikalar geçerlilik tarihleriyle izlenir; bitişe 60 gün kala özet ekranında uyarı verilir.</div></div>
+      <button class="primary" id="ncert" data-perm="evidence:write">+ Sertifika yükle</button></div><div id="certs"></div></div>`;
+    const draw = async () => {
+      const certs = await api(`/api/evidence?supplier_id=${s.id}&kind=sertifika`);
+      document.getElementById("certs").innerHTML = evidenceTable(certs, { cert: true });
+      bindEvidence(document.getElementById("certs"), draw);
+    };
+    document.getElementById("ncert").onclick = () => uploadModal({ supplier_id: s.id, kind: "sertifika" }, draw);
+    await draw();
   } else if (tab === "bildirimler") {
     const list = await api(`/api/notifications?supplier_id=${s.id}`);
     SETTINGS = SETTINGS || (await api("/api/settings").catch(() => null));
@@ -976,7 +994,7 @@ function findingsTable(list, { compact = false, withSupplier = false, selectable
     ${compact ? "" : `<td><span class="badge">${esc(f.source)}</span></td><td>${esc(f.owner || "—")}</td>`}
     <td class="small" style="${overdue(f) ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(f.due_date)}${overdue(f) ? "<br>gecikti" : ""}</td>
     <td>${compact ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto" ${can("finding:write") ? "" : "disabled"}>${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
-    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
+    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-perm="capa:write" data-capa="${f.id}" data-sid="${f.supplier_id}" title="Bu bulgu için CAPA aç">CAPA</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindFindingActions(root, list) {
@@ -990,6 +1008,7 @@ function bindFindingActions(root, list) {
   }));
   root.querySelectorAll("[data-notify]").forEach((b) => (b.onclick = () =>
     notifyModal({ supplier_id: +b.dataset.sid, finding_ids: [+b.dataset.notify] })));
+  root.querySelectorAll("[data-capa]").forEach((b) => (b.onclick = () => capaForm(+b.dataset.sid, +b.dataset.capa)));
   const all = root.querySelector(".fsel-all");
   if (all) all.onchange = () => root.querySelectorAll(".fsel").forEach((c) => (c.checked = all.checked));
 }
@@ -1234,4 +1253,155 @@ async function viewAuditLogs() {
         <td class="small">${esc([l.entity, l.entity_id].filter(Boolean).join(" #"))}</td><td class="small muted" style="max-width:360px;word-break:break-word">${esc(l.detail ? JSON.stringify(l.detail) : "")}</td><td class="small">${esc(l.ip || "")}</td></tr>`).join("")}</tbody></table></div>`;
   };
   document.getElementById("lq").oninput = draw; draw();
+}
+
+
+// ================================================================ KANIT / SERTİFİKA
+async function uploadFile(fields, file) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) if (v != null && v !== "") fd.append(k, v);
+  fd.append("file", file);
+  const res = await fetch("/api/evidence", { method: "POST", body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : (data.detail || []).map((e) => e.msg).join("; ") || `Hata ${res.status}`);
+  return data;
+}
+const fmtSize = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
+const certBadge = (st) => (st ? `<span class="badge ${{ "süresi doldu": "b-crit", yaklaşıyor: "b-warn", geçerli: "b-ok" }[st]}">${esc(st)}</span>` : "");
+
+function evidenceTable(list, { cert = false, compact = false } = {}) {
+  if (!list.length) return `<div class="empty small">${cert ? "Sertifika yok." : "Dosya yok."}</div>`;
+  return `<table class="${compact ? "small" : ""}"><tbody>${list.map((e) => `<tr>
+    <td><a href="/api/evidence/${e.id}/download">${esc(e.title || e.original_name)}</a><div class="small muted">${esc(e.original_name)} · ${fmtSize(e.size)} · ${esc(e.uploaded_by_name || "")} · ${fmtDate(e.created_at)}</div></td>
+    ${cert || e.expires_at ? `<td class="small">Bitiş: <b>${fmtDate(e.expires_at)}</b> ${certBadge(e.cert_status)}</td>` : ""}
+    <td style="white-space:nowrap;text-align:right">${can("evidence:write") && (!isSupplier() || e.uploaded_by === ME.id) ? `${cert ? `<button class="sm" data-evedit="${e.id}" data-exp="${esc(e.expires_at || "")}">Tarih</button> ` : ""}<button class="sm danger" data-evdel="${e.id}">Sil</button>` : ""}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function bindEvidence(root, after) {
+  root.querySelectorAll("[data-evdel]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Dosya silinsin mi?")) return;
+    try { await api(`/api/evidence/${b.dataset.evdel}`, { method: "DELETE" }); toast("Silindi"); after && after(); } catch (e) { toast(e.message); }
+  }));
+  root.querySelectorAll("[data-evedit]").forEach((b) => (b.onclick = async () => {
+    const v = prompt("Yeni geçerlilik bitiş tarihi (YYYY-AA-GG):", b.dataset.exp);
+    if (!v) return;
+    try { await api(`/api/evidence/${b.dataset.evedit}`, { method: "PUT", body: { expires_at: v } }); after && after(); } catch (e) { toast(e.message); }
+  }));
+}
+
+function uploadModal(fields, after) {
+  const cert = fields.kind === "sertifika";
+  modal(`<h2>${cert ? "Sertifika yükle" : "Kanıt dosyası yükle"}</h2><form id="uf">
+    <label>Dosya (PDF, görsel, Office, ZIP · en fazla 20 MB)</label><input type="file" name="file" required>
+    <div class="row" style="margin-top:12px"><div><label>Başlık</label><input name="title" placeholder="${cert ? "ör. ISO 27001 sertifikası" : "ör. Yedekleme test raporu"}"></div>
+      <div><label>Geçerlilik bitişi${cert ? " *" : " (isteğe bağlı)"}</label><input type="date" name="expires_at" ${cert ? "required" : ""}></div></div>
+    <div class="actions" style="justify-content:flex-end"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Yükle</button></div></form>`, (box) => {
+    box.querySelector("#uf").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target.file.files[0];
+      const btn = e.target.querySelector("button.primary"); btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Yükleniyor…`;
+      try { await uploadFile({ ...fields, title: e.target.title.value, expires_at: e.target.expires_at.value }, f); closeModal(); toast("Yüklendi"); after && after(); }
+      catch (err) { toast(err.message, 6000); btn.disabled = false; btn.textContent = "Yükle"; }
+    };
+  });
+}
+
+// Denetim ekranına kanıt ve CAPA ekleri
+async function auditExtras(a) {
+  const [files, caps] = await Promise.all([api(`/api/evidence?audit_id=${a.id}`), can("capa:read") ? api(`/api/capa?audit_id=${a.id}`) : []]);
+  const canUp = can("evidence:write") && !(isSupplier() && a.status === "tamamlandı");
+  const drawSlots = (list) => $app.querySelectorAll(".ev-slot").forEach((slot) => {
+    const mine = list.filter((e) => e.question_id === slot.dataset.ev);
+    slot.innerHTML = `${mine.length ? `<div class="ev-list">${mine.map((e) => `<a class="chip" href="/api/evidence/${e.id}/download" title="${esc(e.original_name)}">📎 ${esc((e.title || e.original_name).slice(0, 40))}</a>`).join(" ")}</div>` : ""}
+      ${canUp ? `<button type="button" class="sm ev-up">+ Kanıt</button>` : ""}`;
+    const up = slot.querySelector(".ev-up");
+    if (up) up.onclick = () => uploadModal({ audit_id: a.id, question_id: slot.dataset.ev }, async () => drawSlots(await api(`/api/evidence?audit_id=${a.id}`)));
+  });
+  drawSlots(files);
+  if (caps.length) document.getElementById("sidecards").innerHTML = `<div class="card"><h2>CAPA kayıtları (${caps.length})</h2>
+    ${caps.map((c) => `<div class="small" style="margin-bottom:6px"><a href="#/capa/${c.id}">${esc(c.title.slice(0, 80))}</a><div>${sevBadge(c.severity)} ${capaBadge(c.status)}</div></div>`).join("")}</div>`;
+}
+
+// ================================================================ CAPA
+const capaBadge = (st) => `<span class="badge ${{ açık: "b-bad", "onay bekliyor": "b-warn", reddedildi: "b-crit", onaylandı: "b-ok" }[st] || ""}">${esc(st)}</span>`;
+
+function capaTable(list, withSupplier = false) {
+  if (!list.length) return `<div class="empty">CAPA kaydı yok.</div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Önem</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>CAPA</th><th>Kaynak</th><th>Termin</th><th>Durum</th><th class="num">Kanıt</th></tr></thead><tbody>
+  ${list.map((c) => `<tr><td>${sevBadge(c.severity)}</td>${withSupplier ? `<td>${esc(c.supplier_name)}</td>` : ""}
+    <td><a href="#/capa/${c.id}"><b>${esc(c.title)}</b></a>${c.status === "reddedildi" && c.review_comment ? `<div class="small" style="color:var(--crit)">Red gerekçesi: ${esc(c.review_comment)}</div>` : ""}</td>
+    <td class="small">${esc(c.trigger)}</td>
+    <td class="small" style="${c.status !== "onaylandı" && c.due_date < todayISO() ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(c.due_date)}</td>
+    <td>${capaBadge(c.status)}${c.round > 1 ? ` <span class="small muted">${c.round}. gönderim</span>` : ""}</td><td class="num">${c.evidence_count ?? ""}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+async function viewCapaList() {
+  const st = new URLSearchParams(location.hash.split("?")[1] || "").get("status") ?? "açık-tümü";
+  $app.innerHTML = `<div class="page-head"><div><h1>CAPA</h1><div class="muted">${isSupplier() ? "Size açılmış düzeltici faaliyetler: kök neden, aksiyon ve kanıt girip onaya gönderin." : "Düzeltici / önleyici faaliyetler ve onay bekleyen tedarikçi yanıtları"}</div></div></div>
+    <div class="card"><div class="filters"><select id="cs">${[["açık-tümü", "Açık (tümü)"], ["onay bekliyor", "Onay bekleyen"], ["açık", "Tedarikçi yanıtı bekleyen"], ["reddedildi", "Reddedilen"], ["onaylandı", "Onaylanan"], ["", "Tümü"]].map(([v, l]) => `<option value="${v}" ${v === st ? "selected" : ""}>${l}</option>`).join("")}</select></div><div id="ct"></div></div>`;
+  const load = async () => { document.getElementById("ct").innerHTML = capaTable(await api(`/api/capa?status=${encodeURIComponent(document.getElementById("cs").value)}`), !isSupplier()); };
+  document.getElementById("cs").onchange = load;
+  await load();
+}
+
+async function viewCapa(id) {
+  const c = await api(`/api/capa/${id}`);
+  const editable = can("capa:submit") && ["açık", "reddedildi"].includes(c.status);
+  const reviewable = can("capa:review") && c.status === "onay bekliyor";
+  const canUp = can("evidence:write") && c.status !== "onaylandı" && (!isSupplier() || c.status !== "onay bekliyor");
+  $app.innerHTML = `<div class="page-head"><div><div class="small"><a href="#/capa">← CAPA listesi</a></div>
+    <h1>${esc(c.title)}</h1><div class="muted">${esc(c.supplier_name)} · ${sevBadge(c.severity)} · ${capaBadge(c.status)} · Kaynak: ${esc(c.trigger)} · Termin: <b>${fmtDate(c.due_date)}</b>
+    ${c.audit_id ? ` · <a href="#/denetim/${c.audit_id}">Denetim ${fmtDate(c.audit_date)}</a>` : ""}</div></div></div>
+  ${c.status === "reddedildi" ? `<div class="card" style="background:var(--bad-bg);color:var(--bad);border-color:transparent"><b>Denetçi reddetti:</b> ${esc(c.review_comment || "")}<div class="small">Düzeltip yeniden gönderin.</div></div>` : ""}
+  <div class="grid g2" style="align-items:start">
+    <div>
+      ${c.description ? `<div class="card"><h2>Uygunsuzluk</h2><div style="white-space:pre-wrap">${esc(c.description)}</div></div>` : ""}
+      <div class="card"><h2>Tedarikçi aksiyon planı ${c.round ? `<span class="small muted">· ${c.round}. gönderim, ${fmtDT(c.submitted_at)}${c.submitted_by_name ? " · " + esc(c.submitted_by_name) : ""}</span>` : ""}</h2>
+        ${editable ? `<form id="sf">
+          <label>Kök neden *</label><textarea name="root_cause" required minlength="3">${esc(c.root_cause || "")}</textarea>
+          <label style="margin-top:8px">Düzeltici faaliyet (ne yapıldı / yapılacak) *</label><textarea name="corrective_action" required minlength="3">${esc(c.corrective_action || "")}</textarea>
+          <label style="margin-top:8px">Önleyici faaliyet (tekrarı nasıl önlenecek)</label><textarea name="preventive_action">${esc(c.preventive_action || "")}</textarea>
+          <div class="row" style="margin-top:8px"><div><label>Planlanan tamamlanma</label><input type="date" name="planned_date" value="${esc(c.planned_date || "")}"></div>
+            <div><label>Denetçiye not</label><input name="comment"></div></div>
+          ${c.severity === "kritik" ? `<div class="small" style="color:var(--crit);margin-bottom:8px">Kritik CAPA: göndermeden önce en az bir kanıt dosyası yükleyin.</div>` : ""}
+          <div class="actions" style="justify-content:flex-end"><button class="primary">Onaya gönder</button></div></form>`
+        : c.round ? `<table><tbody><tr><th>Kök neden</th><td style="white-space:pre-wrap">${esc(c.root_cause)}</td></tr><tr><th>Düzeltici</th><td style="white-space:pre-wrap">${esc(c.corrective_action)}</td></tr>
+            <tr><th>Önleyici</th><td style="white-space:pre-wrap">${esc(c.preventive_action || "—")}</td></tr><tr><th>Planlanan</th><td>${fmtDate(c.planned_date)}</td></tr></tbody></table>`
+        : `<div class="muted">Tedarikçi henüz aksiyon planı göndermedi.</div>`}
+      </div>
+      ${reviewable ? `<div class="card"><h2>Denetçi değerlendirmesi</h2><textarea id="rc" placeholder="Yorum (red için zorunlu)"></textarea>
+        <div class="actions" style="justify-content:flex-end;margin-top:8px"><button class="danger" id="capa-reject">Reddet</button><button class="primary" id="capa-approve">Onayla ve kapat</button></div></div>` : ""}
+    </div>
+    <div>
+      <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Kanıtlar (${c.evidence.length})</h2>${canUp ? `<button class="sm" id="ev">+ Kanıt yükle</button>` : ""}</div><div id="evl">${evidenceTable(c.evidence)}</div></div>
+      <div class="card"><h2>Geçmiş</h2>${c.events.map((e) => `<div class="small" style="margin-bottom:8px"><b>${esc(e.action)}</b>${e.to_status ? ` → ${capaBadge(e.to_status)}` : ""} <span class="muted">${fmtDT(e.created_at + "Z")} · ${esc(e.actor || "sistem")}</span>${e.comment ? `<div class="muted">${esc(e.comment)}</div>` : ""}</div>`).join("")}</div>
+    </div></div>`;
+  bindEvidence(document.getElementById("evl"), router);
+  const ev = document.getElementById("ev");
+  if (ev) ev.onclick = () => uploadModal({ capa_id: c.id }, router);
+  const sf = document.getElementById("sf");
+  if (sf) sf.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api(`/api/capa/${c.id}/submit`, { method: "POST", body: formData(e.target) }); toast("Onaya gönderildi"); router(); } catch (err) { toast(err.message, 6000); }
+  };
+  const rv = (decision) => async () => {
+    try { await api(`/api/capa/${c.id}/review`, { method: "POST", body: { decision, comment: document.getElementById("rc").value || null } }); toast(decision === "approve" ? "Onaylandı, bulgu kapatıldı" : "Reddedildi"); router(); }
+    catch (err) { toast(err.message); }
+  };
+  if (reviewable) { document.getElementById("capa-approve").onclick = rv("approve"); document.getElementById("capa-reject").onclick = rv("reject"); }
+}
+
+function capaForm(supplierId, findingId = null) {
+  modal(`<h2>Manuel CAPA</h2><form id="f">
+    <div style="margin-bottom:12px"><label>Başlık *</label><input name="title" ${findingId ? "" : "required"} placeholder="${findingId ? "Boş bırakılırsa bulgu başlığı kullanılır" : ""}"></div>
+    <div class="row"><div><label>Önem</label><select name="severity"><option>kritik</option><option>yüksek</option><option selected>orta</option><option>düşük</option></select></div>
+      <div><label>Termin</label><input type="date" name="due_date"></div></div>
+    <label>Açıklama</label><textarea name="description"></textarea>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Oluştur</button></div></form>`, (box) => {
+    box.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      try { const c = await api("/api/capa", { method: "POST", body: { ...formData(e.target), supplier_id: supplierId, finding_id: findingId } }); closeModal(); location.hash = `#/capa/${c.id}`; }
+      catch (err) { toast(err.message); }
+    };
+  });
 }

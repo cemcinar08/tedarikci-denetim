@@ -136,9 +136,9 @@ def test_template_api_conditions_and_audit(admin):
     stored = admin.get(f"/api/audits/{a['id']}").json()
     assert stored["decision"] == "rejected" and stored["completed_at"]
     assert admin.get(f"/api/suppliers/{sid}").json()["summary"]["risk"] == "yüksek"
-    g = admin.post(f"/api/audits/{a['id']}/generate-findings").json()
+    assert r["capa_created"] == 2  # kritik madde + düşük puan (50 < 70)
     f = admin.get(f"/api/findings?supplier_id={sid}").json()
-    assert g["created"] == 1 and f[0]["severity"] == "kritik" and f[0]["question_id"] == q["Veri "]["id"]
+    assert f[0]["severity"] == "kritik" and f[0]["question_id"] == q["Veri "]["id"]
     # şablonda kullanıldığı görülür
     assert next(x for x in admin.get("/api/question-sets").json() if x["id"] == t["id"])["used_in"] == 1
 

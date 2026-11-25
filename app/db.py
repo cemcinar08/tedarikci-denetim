@@ -162,6 +162,102 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_users_supplier ON users(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON audit_logs(entity, entity_id);
 
+-- ---------------------------------------------------------------- Kanıt, CAPA, olaylar
+CREATE TABLE IF NOT EXISTS capa_items (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id        INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    audit_id           INTEGER REFERENCES audits(id) ON DELETE SET NULL,
+    finding_id         INTEGER REFERENCES findings(id) ON DELETE SET NULL,
+    question_id        TEXT,
+    trigger            TEXT NOT NULL DEFAULT 'manuel',   -- uygunsuzluk / kill-switch / düşük puan / manuel
+    title              TEXT NOT NULL,
+    description        TEXT,
+    severity           TEXT NOT NULL DEFAULT 'orta',
+    status             TEXT NOT NULL DEFAULT 'açık',     -- açık / onay bekliyor / reddedildi / onaylandı
+    due_date           TEXT,
+    root_cause         TEXT,
+    corrective_action  TEXT,
+    preventive_action  TEXT,
+    planned_date       TEXT,
+    round              INTEGER NOT NULL DEFAULT 0,       -- tedarikçi gönderim sayısı
+    submitted_at       TEXT,
+    submitted_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at        TEXT,
+    reviewed_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    review_comment     TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_capa_supplier ON capa_items(supplier_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_capa_audit_question ON capa_items(audit_id, question_id) WHERE audit_id IS NOT NULL AND question_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS capa_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    capa_id     INTEGER NOT NULL REFERENCES capa_items(id) ON DELETE CASCADE,
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor       TEXT,
+    action      TEXT NOT NULL,          -- oluşturuldu / gönderildi / onaylandı / reddedildi / kanıt eklendi
+    from_status TEXT,
+    to_status   TEXT,
+    comment     TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS evidence_files (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id    INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    audit_id       INTEGER REFERENCES audits(id) ON DELETE CASCADE,
+    question_id    TEXT,                -- denetim maddesi
+    capa_id        INTEGER REFERENCES capa_items(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL DEFAULT 'kanıt',   -- kanıt / sertifika
+    title          TEXT,
+    original_name  TEXT NOT NULL,
+    stored_name    TEXT NOT NULL,
+    mime           TEXT,
+    size           INTEGER NOT NULL,
+    sha256         TEXT NOT NULL,
+    expires_at     TEXT,                -- sertifika geçerlilik sonu
+    uploaded_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_by_name TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_supplier ON evidence_files(supplier_id, kind, expires_at);
+CREATE INDEX IF NOT EXISTS idx_evidence_audit ON evidence_files(audit_id, question_id);
+
+-- Uygulama olayları (bulgu/CAPA/denetim durum değişimleri) ve dış sistemlere webhook teslimatları
+CREATE TABLE IF NOT EXISTS events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    type         TEXT NOT NULL,          -- finding.created, finding.status_changed, capa.*, audit.completed
+    supplier_id  INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
+    entity       TEXT,
+    entity_id    TEXT,
+    payload      TEXT NOT NULL,          -- JSON
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    secret       TEXT,
+    events       TEXT NOT NULL DEFAULT '["*"]',  -- JSON: olay türleri veya "*"
+    supplier_id  INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,  -- boş = tüm tedarikçiler
+    active       INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscription_id  INTEGER REFERENCES webhook_subscriptions(id) ON DELETE CASCADE,
+    event_id         INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    status           TEXT NOT NULL DEFAULT 'beklemede',  -- beklemede / gönderildi / başarısız
+    response_code    INTEGER,
+    error            TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    delivered_at     TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -275,7 +371,7 @@ def row(r):
     d = dict(r)
     if "domains" in d and isinstance(d["domains"], str):
         d["domains"] = json.loads(d["domains"] or "[]")
-    for k in ("sections", "checklist", "set_names", "template_ids", "detail", "permissions", "condition_json", "kill_switches"):
+    for k in ("sections", "checklist", "set_names", "template_ids", "detail", "permissions", "payload_json", "events_json", "condition_json", "kill_switches"):
         if k in d and isinstance(d[k], str):
             try:
                 d[k] = json.loads(d[k])

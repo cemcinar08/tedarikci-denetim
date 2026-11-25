@@ -17,6 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
+from . import capa, events, evidence
 from . import template_store as ts
 from . import templates_engine as eng
 from . import auth
@@ -155,6 +156,17 @@ class FindingUpdate(BaseModel):
 
 
 # ============================================================ Yardımcılar
+def _emit_finding_created(db, fid: int) -> None:
+    f = row(db.execute("SELECT id, supplier_id, audit_id, scan_id, source, title, severity, status, due_date FROM findings "
+                       "WHERE id=?", (fid,)).fetchone())
+    events.emit("finding.created", f["supplier_id"], "finding", fid, f, db)
+
+
+def _emit_finding_status(db, f: dict, new_status: str, reason: str | None = None) -> None:
+    if f["status"] != new_status:
+        events.emit("finding.status_changed", f["supplier_id"], "finding", f["id"],
+                    {"id": f["id"], "title": f["title"], "from": f["status"], "to": new_status, "reason": reason}, db)
+
 def _check_tier(db, tier_id):
     if tier_id and not db.execute("SELECT 1 FROM supplier_tiers WHERE id=?", (tier_id,)).fetchone():
         raise HTTPException(422, "Geçersiz tedarikçi seviyesi")
@@ -470,6 +482,10 @@ def update_audit(aid: int, body: AuditUpdate):
         if completed:
             auth.log("audit.complete", "audit", aid, {"score": r["score"], "decision": r["decision"],
                                                        "kill_switch": r["kill_switch"]}, db=db)
+            events.emit("audit.completed", a["supplier_id"], "audit", aid,
+                        {"id": aid, "score": r["score"], "risk_level": r["risk_level"], "decision": r["decision"],
+                         "kill_switches": [k["text"] for k in r["kill_switches"]]}, db)
+            a["capa_created"] = len(capa.auto_open_for_audit(db, a))
         return a
 
 
@@ -506,6 +522,8 @@ async def generate_audit_findings(aid: int):
                  f"Denetim cevabı: {v['answer']}" + (" (kritik madde)" if q.get("critical") else "")
                  + (f"\nNot: {v['note']}" if v.get("note") else ""), due_for(sev))).lastrowid)
             created += 1
+        for fid in new_ids:
+            _emit_finding_created(db, fid)
         supplier_id = a["supplier_id"]
     sent = await notify.auto_notify(supplier_id, new_ids)
     return {"created": created, "notified": [n["channel"] for n in sent if n["status"] == "gönderildi"]}
@@ -540,6 +558,7 @@ def create_finding(body: FindingIn):
     with get_db() as db:
         _get_supplier(db, d["supplier_id"])
         cur = db.execute(f"INSERT INTO findings ({', '.join(d)}) VALUES ({', '.join('?' * len(d))})", list(d.values()))
+        _emit_finding_created(db, cur.lastrowid)
         return row(db.execute("SELECT * FROM findings WHERE id=?", (cur.lastrowid,)).fetchone())
 
 
@@ -552,6 +571,7 @@ def update_finding(fid: int, body: FindingUpdate):
             raise HTTPException(404, "Bulgu bulunamadı")
         if "status" in d:
             d["closed_at"] = dt.datetime.now().isoformat(timespec="seconds") if d["status"] == "kapandı" else None
+            _emit_finding_status(db, f, d["status"], "Elle güncellendi")
         if d:
             db.execute(f"UPDATE findings SET {', '.join(k + '=?' for k in d)} WHERE id=?", [*d.values(), fid])
         return row(db.execute("SELECT * FROM findings WHERE id=?", (fid,)).fetchone())
@@ -588,8 +608,11 @@ def _store_scan(db, sid: int, result: dict, create_findings: bool) -> dict:
                      due_for(c["severity"]))).lastrowid)
                 created += 1
         # Önceki taramada başarısız olup artık geçen kontroller -> otomatik kapat
+        for fid in new_ids:
+            _emit_finding_created(db, fid)
         for title, f in open_intel.items():
             if status_by_title.get(title) == "pass":
+                _emit_finding_status(db, f, "kapandı", "Dış istihbarat taramasında giderildiği doğrulandı")
                 db.execute(
                     "UPDATE findings SET status='kapandı', closed_at=?, description=COALESCE(description,'') || ? WHERE id=?",
                     (dt.datetime.now().isoformat(timespec="seconds"),
@@ -688,6 +711,9 @@ def dashboard():
 
 # ============================================================ Statik arayüz
 app.include_router(notify.router)
+app.include_router(capa.router)
+app.include_router(evidence.router)
+app.include_router(events.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

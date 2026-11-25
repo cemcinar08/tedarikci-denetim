@@ -246,6 +246,13 @@ class AuthMiddleware:
                     log(f"{method} {path}", detail={"status": status["code"]}, user=user, ip=_ip(request))
                 except Exception:  # kayıt hatası isteği bozmasın
                     pass
+                # İşlem commit edildikten sonra bekleyen webhook teslimatlarını gönder (yanıt zaten iletildi)
+                from . import events
+                try:
+                    if events.has_pending():
+                        await events.deliver_pending()
+                except Exception:
+                    pass
 
 
 # ------------------------------------------------------------------ veri tabanı tohumları

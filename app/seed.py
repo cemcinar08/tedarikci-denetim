@@ -1,5 +1,4 @@
 """Örnek veri yükler:  python -m app.seed"""
-import asyncio
 import datetime as dt
 
 from .db import get_db, init_db
@@ -14,8 +13,8 @@ SUPPLIERS = [
     ("Marmara Ambalaj", "Ambalaj", "Türkiye", "düşük", [], ["iso-9001-2015", "iso-14001-2015"]),
     ("Bulut Ödeme Hizmetleri", "Ödeme / SaaS", "Türkiye", "yüksek", ["example.net"], ["iso-27001-2022", "pci-dss-4", "kvkk"]),
 ]
-PATTERNS = [["uygun", "uygun", "uygun", "kısmen", "uygun değil"], ["uygun", "uygun", "kısmen"],
-            None, ["uygun", "uygun", "uygun", "kısmen", "uygun", "uygun değil", "uygun"]]
+PATTERNS = [["uygun"] * 7 + ["kısmen", "uygun değil"], ["uygun"] * 5 + ["kısmen"],
+            None, ["uygun"] * 12 + ["kısmen", "uygun değil"]]
 
 
 def main():
@@ -37,10 +36,7 @@ def main():
         a = m.create_audit(s["id"], m.AuditIn(question_set_ids=ids, audit_date=D(-40 - 30 * i), auditor="Kalite Ekibi"))
         qids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
         answers = {q: m.AnswerIn(answer=PATTERNS[i][(j + i) % len(PATTERNS[i])]) for j, q in enumerate(qids)}
-        m.update_audit(a["id"], m.AuditUpdate(status="tamamlandı", answers=answers))
-        asyncio.run(m.generate_audit_findings(a["id"]))
-        with get_db() as db:  # örnek veri sade kalsın: yalnızca "uygun değil" bulguları
-            db.execute("DELETE FROM findings WHERE audit_id=? AND severity='orta'", (a["id"],))
+        m.update_audit(a["id"], m.AuditUpdate(status="tamamlandı", answers=answers))  # bulgu + CAPA otomatik açılır
         with get_db() as db:  # bazı bulgulara sorumlu/termin ver; birini gecikmiş yap
             db.execute("UPDATE findings SET owner='Tedarikçi Kalite Müh.', "
                        "action='Tedarikçiden kök neden analizi ve aksiyon planı talep edilecek.' WHERE audit_id=?", (a["id"],))

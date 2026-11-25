@@ -121,6 +121,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-wea
   .q { grid-template-columns: 1fr; }
 }
 
+.ev-slot { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ev-slot:empty { display: none; }
+.ev-list { display: flex; gap: 4px; flex-wrap: wrap; }
+
 /* Oturum */
 .usermenu { margin-left: auto; display: flex; align-items: center; gap: 10px; white-space: nowrap; font-size: 13px; }
 .usermenu .who { text-align: right; line-height: 1.2; }
