@@ -189,7 +189,7 @@ boot();
 
 // ================================================================ PANO
 async function viewDashboard() {
-  const d = await api("/api/dashboard");
+  const [d, sm] = await Promise.all([api("/api/dashboard"), api("/api/summary?days=60")]);
   const t = d.totals;
   $app.innerHTML = `
   <div class="page-head"><div><h1>Pano</h1><div class="muted">Tedarikçi risk durumu — ${new Date().toLocaleDateString("tr-TR")}</div></div>
@@ -201,6 +201,7 @@ async function viewDashboard() {
     <div class="kpi"><div class="v" style="color:${t.overdue_findings ? "var(--bad)" : "inherit"}">${t.overdue_findings}</div><div class="l">Süresi geçmiş aksiyon</div></div>
     <div class="kpi"><div class="v" style="color:var(--ok)">${t.closed_last_30}</div><div class="l">Son 30 günde kapanan</div></div>
   </div>
+  ${summaryBlock(sm)}
   <div class="grid g3">
     <div class="card"><h2>Risk dağılımı</h2>${stackedBar([
       { l: "Yüksek", v: d.risk["yüksek"], c: "var(--bad)" }, { l: "Orta", v: d.risk["orta"], c: "var(--warn)" },
@@ -539,6 +540,7 @@ async function viewSettings() {
     <div class="actions" style="margin-top:12px;align-items:center"><span>Durum: ${st.smtp_ready ? `<span class="badge b-ok">hazır</span>` : `<span class="badge b-warn">yapılandırılmadı</span>`}</span>
       <input id="testTo" placeholder="Test alıcısı (e-posta)" style="width:260px"><button type="button" id="test">Test e-postası gönder</button></div></div>
   <div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
+  <div class="card" style="margin-top:16px" id="whcard"></div>
   <div class="card" style="margin-top:16px"><h2>Tedarikçi sistemleri için entegrasyon bilgisi</h2><div class="small">
     <p><b>Webhook (bizden tedarikçiye):</b> Her tedarikçi için tanımlanan adrese <code>POST</code> ile JSON gönderilir. Olaylar: <code>finding.notification</code>, <code>intel.notification</code>, <code>test</code>.
       Başlıklar: <code>X-TD-Event</code>, <code>X-TD-Delivery</code> (tekil id), <code>X-TD-Timestamp</code>, <code>X-TD-Signature</code>.
@@ -547,6 +549,7 @@ async function viewSettings() {
       <code>POST /api/public/respond/{token}</code> · JSON: <code>{"finding_id": 12, "status": "okundu | aksiyon planlandı | giderildi | itiraz", "comment": "...", "planned_date": "YYYY-AA-GG", "responder": "..."}</code><br>
       <code>finding_id</code> verilmezse yanıt bildirimdeki tüm bulgulara uygulanır. <code>GET</code> aynı adreste bildirimin güncel durumunu döner. Token bildirime özeldir; yalnızca o bildirimin bulgularına erişim verir.</p>
     <p>Tedarikçinin "aksiyon planlandı" veya "giderildi" yanıtı, açık bulguyu "devam ediyor" durumuna alır. Bulguyu kapatmak (doğrulamak) her zaman sizin kararınızdır.</p></div></div>`;
+  webhookAdmin(document.getElementById("whcard"));
   document.getElementById("sf").onsubmit = async (e) => {
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target));
@@ -570,8 +573,8 @@ function auditsTable(list, withSupplier = false) {
   return `<div class="table-wrap"><table><thead><tr><th>Tarih</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>Soru setleri</th><th>Tür</th><th>Denetçi</th><th>Durum</th><th>Puan</th><th></th></tr></thead><tbody>
   ${list.map((a) => `<tr><td>${fmtDate(a.audit_date)}</td>${withSupplier ? `<td><a href="#/tedarikci/${a.supplier_id}">${esc(a.supplier_name)}</a></td>` : ""}
     <td class="small">${esc((a.set_names || ["Genel Tedarikçi Denetimi"]).join(", "))}</td>
-    <td>${esc(a.audit_type)}</td><td>${esc(a.auditor || "—")}</td><td>${statusBadge(a.status)}</td><td style="min-width:140px">${meter(a.score)}</td>
-    <td><a href="#/denetim/${a.id}">Aç →</a></td></tr>`).join("")}</tbody></table></div>`;
+    <td>${esc(a.audit_type)}</td><td>${esc(a.auditor || "—")}</td><td>${statusBadge(a.status)} ${decisionBadge(a.decision)}</td><td style="min-width:140px">${meter(a.score)}</td>
+    <td style="white-space:nowrap"><a href="#/denetim/${a.id}">Aç →</a>${can("report:read") ? ` · <a href="/api/reports/audits/${a.id}.pdf" target="_blank">PDF</a> · <a href="/api/reports/audits/${a.id}.csv">CSV</a>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 async function viewAudits() {
@@ -1404,4 +1407,74 @@ function capaForm(supplierId, findingId = null) {
       catch (err) { toast(err.message); }
     };
   });
+}
+
+
+// ================================================================ ÖZET
+const RISK_TR = { high: "Yüksek", medium: "Orta", low: "Düşük", none: "Denetlenmedi" };
+function summaryBlock(sm) {
+  const r = sm.risk_distribution, c = sm.capa, ce = sm.certificates;
+  return `<div class="grid g3">
+    <div class="card"><h2>Risk seviyesi (son denetim)</h2>${stackedBar([
+      { l: RISK_TR.high, v: r.high, c: "var(--bad)" }, { l: RISK_TR.medium, v: r.medium, c: "var(--warn)" },
+      { l: RISK_TR.low, v: r.low, c: "var(--ok)" }, { l: RISK_TR.none, v: r.none, c: "var(--border)" }])}
+      ${sm.rejected_suppliers ? `<div class="small" style="margin-top:8px;color:var(--crit)"><b>${sm.rejected_suppliers}</b> tedarikçinin son denetimi reddedildi</div>` : ""}</div>
+    <div class="card"><h2>Açık CAPA <span class="muted small">· ${c.open}</span></h2>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr);gap:8px;margin:0">
+        <a class="kpi" href="#/capa?status=açık" style="padding:8px"><div class="v" style="font-size:20px">${c.by_status["açık"]}</div><div class="l">Tedarikçide</div></a>
+        <a class="kpi" href="#/capa?status=onay bekliyor" style="padding:8px"><div class="v" style="font-size:20px;color:var(--warn)">${c.by_status["onay bekliyor"]}</div><div class="l">Onay bekliyor</div></a>
+        <a class="kpi" href="#/capa?status=reddedildi" style="padding:8px"><div class="v" style="font-size:20px;color:var(--crit)">${c.by_status["reddedildi"]}</div><div class="l">Reddedildi</div></a></div>
+      <div class="small" style="margin-top:8px">${c.overdue ? `<b style="color:var(--bad)">${c.overdue} CAPA'nın termini geçti</b> · ` : ""}${c.by_severity["kritik"]} kritik · ${c.by_severity["yüksek"]} yüksek</div></div>
+    <div class="card"><h2>Sertifika bitişleri <span class="muted small">· ${ce.window_days} gün</span></h2>
+      ${ce.items.length ? `<table class="small"><tbody>${ce.items.slice(0, 6).map((x) => `<tr><td>${esc(x.supplier_name)}<div class="muted">${esc(x.title || x.original_name)}</div></td>
+        <td style="white-space:nowrap">${fmtDate(x.expires_at)}<div>${x.days_left < 0 ? `<span class="badge b-crit">${-x.days_left} gün geçti</span>` : `<span class="badge b-warn">${x.days_left} gün</span>`}</div></td></tr>`).join("")}</tbody></table>
+        ${ce.items.length > 6 ? `<div class="small muted">+${ce.items.length - 6} sertifika daha</div>` : ""}`
+        : `<div class="empty small">Yaklaşan sertifika bitişi yok.</div>`}</div>
+  </div>`;
+}
+
+// ================================================================ WEBHOOK ABONELİKLERİ
+const EVENT_TR = { "*": "Tüm olaylar", "finding.created": "Yeni bulgu", "finding.status_changed": "Bulgu durumu değişti", "capa.created": "CAPA açıldı",
+  "capa.submitted": "CAPA onaya gönderildi", "capa.approved": "CAPA onaylandı", "capa.rejected": "CAPA reddedildi", "audit.completed": "Denetim tamamlandı" };
+
+async function webhookAdmin(root) {
+  const [subs, dels, sups] = await Promise.all([api("/api/webhooks"), api("/api/webhooks/deliveries?limit=30"), api("/api/suppliers")]);
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Olay webhook'ları</h2>
+    <div class="small muted">Yeni bulgu, bulgu durum değişimi, CAPA adımları ve denetim tamamlanması gibi olaylar seçtiğiniz sistemlere (SIEM, ticket, Slack/Teams köprüsü, GRC) imzalı JSON olarak iletilir.</div></div>
+    <button id="nwh">+ Abonelik</button></div>
+  ${subs.items.length ? `<table><thead><tr><th>Ad</th><th>Adres</th><th>Olaylar</th><th>Kapsam</th><th></th></tr></thead><tbody>${subs.items.map((w) => `<tr>
+    <td><b>${esc(w.name)}</b> ${w.active ? "" : `<span class="badge">pasif</span>`}</td><td class="small" style="word-break:break-all">${esc(w.url)}${w.secret ? ` <span class="badge b-ok">imzalı</span>` : ""}</td>
+    <td class="small">${w.events.map((e) => esc(EVENT_TR[e] || e)).join(", ")}</td><td class="small">${esc(w.supplier_name || "Tüm tedarikçiler")}</td>
+    <td style="white-space:nowrap"><button class="sm" data-wt="${w.id}">Test</button> <button class="sm" data-we="${w.id}">Düzenle</button></td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty small">Abonelik yok.</div>`}
+  ${dels.length ? `<h3>Son teslimatlar</h3><table class="small"><tbody>${dels.map((d) => `<tr><td>${fmtDT(d.created_at + "Z")}</td><td>${esc(d.subscription_name)}</td><td><code>${esc(d.event_type)}</code> ${esc(d.entity || "")} #${esc(d.entity_id || "")}</td>
+    <td><span class="badge ${{ gönderildi: "b-ok", başarısız: "b-bad" }[d.status] || "b-warn"}">${esc(d.status)}</span>${d.response_code ? ` HTTP ${d.response_code}` : ""}${d.error ? `<div style="color:var(--bad)">${esc(d.error)}</div>` : ""}</td>
+    <td>${d.attempts} deneme</td><td>${d.status === "başarısız" ? `<button class="sm" data-wr="${d.id}">Tekrar</button>` : ""}</td></tr>`).join("")}</tbody></table>` : ""}`;
+  const form = (w = { events: ["*"], active: true }) => modal(`<h2>${w.id ? "Aboneliği düzenle" : "Yeni webhook aboneliği"}</h2><form id="wf">
+    <div class="row"><div><label>Ad</label><input name="name" required value="${esc(w.name || "")}" placeholder="ör. SIEM, Jira"></div>
+      <div><label>Kapsam</label><select name="supplier_id"><option value="">Tüm tedarikçiler</option>${sups.map((x) => `<option value="${x.id}" ${x.id === w.supplier_id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div></div>
+    <label>Adres (URL)</label><input name="url" required value="${esc(w.url || "")}" placeholder="https://...">
+    <div class="row" style="margin-top:8px"><div><label>İmza anahtarı</label><div style="display:flex;gap:6px"><input name="secret" value="${esc(w.secret || "")}" autocomplete="off"><button type="button" id="wg">Üret</button></div></div>
+      <div><label>Durum</label><select name="active"><option value="1" ${w.active ? "selected" : ""}>aktif</option><option value="0" ${w.active ? "" : "selected"}>pasif</option></select></div></div>
+    <label>Olaylar</label><div class="set-grid" style="margin-bottom:12px">${Object.entries(EVENT_TR).map(([k, v]) => `<label class="te-small"><input type="checkbox" name="ev" value="${k}" ${w.events.includes(k) ? "checked" : ""}> ${v}</label>`).join("")}</div>
+    <div class="actions" style="justify-content:space-between">${w.id ? `<button type="button" class="danger" id="wd">Sil</button>` : "<span></span>"}<div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></div></form>`, (box) => {
+    box.querySelector("#wg").onclick = () => { const a = new Uint8Array(24); crypto.getRandomValues(a); box.querySelector("[name=secret]").value = [...a].map((x) => x.toString(16).padStart(2, "0")).join(""); };
+    box.querySelector("#wf").onsubmit = async (e) => {
+      e.preventDefault();
+      const d = formData(e.target);
+      d.events = [...e.target.querySelectorAll("[name=ev]:checked")].map((c) => c.value);
+      if (d.events.includes("*")) d.events = ["*"];
+      d.active = d.active === "1"; delete d.ev;
+      try { await api(w.id ? `/api/webhooks/${w.id}` : "/api/webhooks", { method: w.id ? "PUT" : "POST", body: d }); closeModal(); webhookAdmin(root); } catch (err) { toast(err.message); }
+    };
+    const wd = box.querySelector("#wd");
+    if (wd) wd.onclick = async () => { if (confirm("Abonelik silinsin mi?")) { await api(`/api/webhooks/${w.id}`, { method: "DELETE" }); closeModal(); webhookAdmin(root); } };
+  });
+  root.querySelector("#nwh").onclick = () => form();
+  root.querySelectorAll("[data-we]").forEach((b) => (b.onclick = () => form(subs.items.find((x) => x.id == b.dataset.we))));
+  root.querySelectorAll("[data-wt]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true; const r = await api(`/api/webhooks/${b.dataset.wt}/test`, { method: "POST" }).catch((e) => ({ status: "başarısız", error: e.message }));
+    toast(r.status === "gönderildi" ? `Test gönderildi (HTTP ${r.response_code})` : `Başarısız: ${r.error}`, 6000); webhookAdmin(root);
+  }));
+  root.querySelectorAll("[data-wr]").forEach((b) => (b.onclick = async () => { await api(`/api/webhooks/deliveries/${b.dataset.wr}/retry`, { method: "POST" }); webhookAdmin(root); }));
 }

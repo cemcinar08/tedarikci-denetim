@@ -11,6 +11,7 @@ if [ ! -d .venv ]; then
   "$PY" -m venv .venv && .venv/bin/python -m pip install -q -r requirements.txt || { read -p "Hata oluştu. Enter"; exit 1; }
   .venv/bin/python -m app.seed
 fi
+.venv/bin/python -m pip install -q -r requirements.txt  # güncellemelerde yeni paketler
 echo "Uygulama başlatılıyor: http://localhost:8000  (kapatmak için bu pencereyi kapatın)"
 ( sleep 2; open http://localhost:8000 2>/dev/null || xdg-open http://localhost:8000 2>/dev/null ) &
 .venv/bin/python -m uvicorn app.main:app --port 8000

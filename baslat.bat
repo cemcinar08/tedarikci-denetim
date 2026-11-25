@@ -13,6 +13,7 @@ if not exist .venv (
   .venv\Scripts\python -m pip install -q -r requirements.txt || (pause & exit /b 1)
   .venv\Scripts\python -m app.seed
 )
+.venv\Scripts\python -m pip install -q -r requirements.txt
 echo.
 echo Uygulama baslatiliyor: http://localhost:8000   (kapatmak icin bu pencereyi kapatin)
 start "" http://localhost:8000

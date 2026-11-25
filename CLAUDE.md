@@ -6,8 +6,9 @@
 - `app/main.py` — API uçları (tedarikçi, denetim, bulgu, istihbarat, pano)
 - `app/db.py` — şema + `MIGRATIONS` (yeni sütun = buraya ekle; tablo silme/yeniden adlandırma yok)
 - `app/auth.py` — kullanıcı, oturum, RBAC middleware, satır izolasyonu (`scope`)
-- `app/templates_engine.py` — koşullu soru + puanlama/kill-switch (saf fonksiyonlar)
-- `app/capa.py`, `app/evidence.py`, `app/events.py`, `app/notify.py`, `app/reports/` — servisler
+- `app/templates_engine.py` — koşullu soru + puanlama/kill-switch (saf); `app/template_store.py` — şablon DB erişimi
+- `app/capa.py`, `app/evidence.py`, `app/events.py`, `app/summary.py`, `app/notify.py` — servisler
+- `app/reports/` — bağımsız rapor servisi (PDF/CSV, CLI: `python -m app.reports <id>`)
 - `app/intel/scanner.py` — pasif dış istihbarat
 - `static/` — SPA (`app.js`), tedarikçi yanıt sayfası (`yanit.html`)
 - `tests/` — pytest; `data/` — çalışma verisi (git dışı)

@@ -48,7 +48,8 @@ def emit(event_type: str, supplier_id: Optional[int], entity: str, entity_id, da
 
 def has_pending() -> bool:
     with get_db() as db:
-        return db.execute("SELECT 1 FROM webhook_deliveries WHERE status='beklemede' LIMIT 1").fetchone() is not None
+        return db.execute("SELECT 1 FROM webhook_deliveries WHERE status='beklemede' OR (status='başarısız' AND attempts < ?) "
+                          "LIMIT 1", (MAX_ATTEMPTS,)).fetchone() is not None
 
 
 def _body(ev: dict, supplier_name: str | None) -> dict:

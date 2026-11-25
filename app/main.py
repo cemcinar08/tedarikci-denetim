@@ -17,7 +17,8 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import capa, events, evidence
+from . import capa, events, evidence, summary
+from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
 from . import auth
@@ -714,6 +715,8 @@ app.include_router(notify.router)
 app.include_router(capa.router)
 app.include_router(evidence.router)
 app.include_router(events.router)
+app.include_router(summary.router)
+app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

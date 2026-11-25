@@ -38,6 +38,29 @@ Tedarikçi denetimi, bulgu/DÖF takibi ve **dış istihbarat** (domain'lerin dı
 - **Rapor**: tedarikçi bazında yazdırılabilir / PDF rapor
 - **Genel puan** = denetim × %60 + siber × %40. Risk: kritik açık bulgu, genel puan < 50 veya yüksek kritik tedarikçide < 70 → *yüksek*.
 
+## Kullanıcılar ve roller
+İlk açılışta yönetici hesabı oluşturulur; diğer kullanıcılar **Kullanıcılar** sayfasından eklenir.
+| Rol | Yetki |
+|---|---|
+| Yönetici | Her şey (kullanıcılar, ayarlar, işlem kayıtları dahil) |
+| Denetçi | Tedarikçi, denetim, şablon, bulgu; CAPA onay/red; tarama ve bildirim |
+| İzleyici | Salt okunur |
+| Tedarikçi | Yalnızca kendi firmasının kayıtları; CAPA'ya kök neden/aksiyon/kanıt girişi, sertifika yükleme |
+
+Tüm değişiklikler **İşlem Kayıtları**'na (audit_logs) yazılır.
+
+## Denetim kuralları
+- **Koşullu sorular:** bir soru, başka bir sorunun belirli cevaplarında açılır (ör. sertifika yoksa alternatif kanıt sorusu).
+- **Ağırlık:** bölüm ve soru bazında.
+- **Kill-switch:** *kritik* işaretli soruda "Uygun değil" → puandan bağımsız olarak **reddedildi / yüksek risk**.
+- Denetim **tamamlandı** yapıldığında uygunsuzluklar ve düşük puan (<70) için **CAPA** otomatik açılır.
+  Tedarikçi aksiyon ve kanıt girip onaya gönderir; denetçi onaylar (bulgu kapanır) veya gerekçeyle reddeder.
+
+## Raporlar ve entegrasyon
+- Denetim raporu: PDF / CSV (denetim ekranı veya `python -m app.reports <denetim_id> --format pdf`)
+- Olay webhook'ları (Ayarlar): `finding.created`, `finding.status_changed`, `capa.created/submitted/approved/rejected`,
+  `audit.completed` — imzalı JSON, teslimat geçmişi ve yeniden deneme.
+
 ## Hızlı başlangıç (çift tıkla)
 - **Windows:** `baslat.bat` dosyasına çift tıklayın.
 - **Mac:** `baslat.command` dosyasına sağ tıklayıp *Aç* deyin (ilk seferde güvenlik onayı ister).
@@ -48,7 +71,7 @@ Gereken tek şey Python 3.10+ (https://www.python.org/downloads/).
 ## Kurulum (elle)
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python -m app.seed            # (isteğe bağlı) örnek veri
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
