@@ -138,7 +138,8 @@ async function boot() {
   const um = document.getElementById("usermenu");
   um.classList.remove("hidden");
   um.innerHTML = `<div class="who"><b>${esc(ME.name)}</b><div class="small muted">${esc(ME.role_title)}${ME.supplier_name ? " · " + esc(ME.supplier_name) : ""}</div></div>
-    <button class="sm" id="pw">Parola</button><button class="sm" id="logout">Çıkış</button>`;
+    ${themeButton()}<button class="sm" id="pw">Parola</button><button class="sm" id="logout">Çıkış</button>`;
+  bindTheme(um);
   document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.hash = "#/"; location.reload(); };
   document.getElementById("pw").onclick = passwordForm;
   applyPerms();
@@ -149,7 +150,20 @@ async function boot() {
 function authShell(html) {
   document.getElementById("nav").classList.add("hidden");
   document.getElementById("usermenu").classList.add("hidden");
-  $app.innerHTML = `<div class="card login-box">${html}</div>`;
+  $app.innerHTML = `<div class="theme-float">${themeButton()}</div><div class="card login-box">${html}</div>`;
+  bindTheme($app);
+}
+
+// ---------------------------------------------------------------- tema (açık / koyu)
+const currentTheme = () => document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+const themeButton = () => `<button class="sm theme-toggle" data-theme-toggle title="${currentTheme() === "dark" ? "Açık temaya geç" : "Koyu temaya geç"}" aria-label="Temayı değiştir">${currentTheme() === "dark" ? "☀" : "☾"}</button>`;
+function bindTheme(root) {
+  root.querySelectorAll("[data-theme-toggle]").forEach((b) => (b.onclick = () => {
+    const next = currentTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("theme", next); } catch { /* özel pencere */ }
+    document.querySelectorAll("[data-theme-toggle]").forEach((x) => { x.textContent = next === "dark" ? "☀" : "☾"; x.title = next === "dark" ? "Açık temaya geç" : "Koyu temaya geç"; });
+  }));
 }
 
 function showLogin() {
