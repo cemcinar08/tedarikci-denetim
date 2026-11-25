@@ -58,7 +58,7 @@ document.addEventListener("keydown", (e) => e.key === "Escape" && closeModal());
 const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, v === "" ? null : v]));
 
 // ---------------------------------------------------------------- rozetler
-const riskBadge = (r) => `<span class="badge ${{ yüksek: "b-bad", orta: "b-warn", düşük: "b-ok" }[r] || ""}">${esc(r ?? "—")}</span>`;
+const riskBadge = (r) => riskPill(r);
 const sevBadge = (s) => `<span class="badge ${{ kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", düşük: "" }[s] || ""}">${esc(s)}</span>`;
 const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "" }[s] ?? ""}">${esc(s)}</span>`;
 const checkBadge = (s) => {
@@ -188,47 +188,119 @@ function passwordForm() {
 boot();
 
 // ================================================================ PANO
+const RISK_BADGE = { yüksek: ["b-bad", "Yüksek"], orta: ["b-warn", "Orta"], düşük: ["b-ok", "Düşük"], bilinmiyor: ["", "Değerlendirilmedi"] };
+const riskPill = (r) => { const [c, l] = RISK_BADGE[r] || ["", r || "—"]; return `<span class="badge ${c}"><span class="dot"></span>${l}</span>`; };
+const daysTo = (d) => (d ? Math.round((new Date(d + "T00:00:00") - new Date(todayISO() + "T00:00:00")) / 864e5) : null);
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* yok */ } } };
+
 async function viewDashboard() {
-  const [d, sm] = await Promise.all([api("/api/dashboard"), api("/api/summary?days=60")]);
-  const t = d.totals;
+  const [d, sm, pend] = await Promise.all([api("/api/dashboard"), api("/api/summary?days=60"),
+    can("capa:read") ? api("/api/capa?status=onay bekliyor") : Promise.resolve([])]);
+  const t = d.totals, c = sm.capa, ce = sm.certificates, rk = d.risk;
+  const metric = (label, value, sub = "", cls = "", href = null) =>
+    `<${href ? `a href="${href}"` : "div"} class="metric"><div class="l">${label}</div><div class="v ${cls}">${value}</div><div class="s">${sub || "&nbsp;"}</div></${href ? "a" : "div"}>`;
   $app.innerHTML = `
-  <div class="page-head"><div><h1>Pano</h1><div class="muted">Tedarikçi risk durumu — ${new Date().toLocaleDateString("tr-TR")}</div></div>
-    <div class="actions"><a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">+ Tedarikçi</a></div></div>
-  <div class="kpis">
-    <div class="kpi"><div class="v">${t.suppliers}</div><div class="l">Aktif tedarikçi</div></div>
-    <div class="kpi"><div class="v" style="color:var(--bad)">${d.risk["yüksek"]}</div><div class="l">Yüksek riskli tedarikçi</div></div>
-    <div class="kpi"><div class="v">${t.open_findings}</div><div class="l">Açık bulgu</div></div>
-    <div class="kpi"><div class="v" style="color:${t.overdue_findings ? "var(--bad)" : "inherit"}">${t.overdue_findings}</div><div class="l">Süresi geçmiş aksiyon</div></div>
-    <div class="kpi"><div class="v" style="color:var(--ok)">${t.closed_last_30}</div><div class="l">Son 30 günde kapanan</div></div>
+  <div class="page-head"><div><h1>Genel bakış</h1><div class="muted">${isSupplier() ? esc(ME.supplier_name || "") + " · " : ""}${new Date().toLocaleDateString("tr-TR", { dateStyle: "long" })}</div></div>
+    <div class="actions">${can("report:read") ? `<button id="exp">CSV dışa aktar</button>` : ""}<a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">Tedarikçi ekle</a></div></div>
+  <div class="metric-strip">
+    ${metric("Aktif tedarikçi", t.suppliers, `${rk["bilinmiyor"]} değerlendirilmedi`)}
+    ${metric("Yüksek risk", rk["yüksek"], `orta ${rk["orta"]} · düşük ${rk["düşük"]}`, rk["yüksek"] ? "bad" : "")}
+    ${metric("Reddedilen denetim", sm.rejected_suppliers, "son denetimi reddedilen", sm.rejected_suppliers ? "bad" : "")}
+    ${metric("Açık CAPA", c.open, `${c.by_severity["kritik"]} kritik · ${c.by_severity["yüksek"]} yüksek`, "", can("capa:read") ? "#/capa" : null)}
+    ${metric("Onay bekleyen", c.by_status["onay bekliyor"], "denetçi değerlendirmesi", c.by_status["onay bekliyor"] ? "warn" : "", can("capa:read") ? "#/capa?status=onay bekliyor" : null)}
+    ${metric("Termini geçen CAPA", c.overdue, `${t.overdue_findings} gecikmiş bulgu`, c.overdue ? "bad" : "")}
+    ${metric("Açık bulgu", t.open_findings, `son 30 günde ${t.closed_last_30} kapandı`, "", can("finding:read") ? "#/bulgular" : null)}
+    ${metric("Sertifika · 60 gün", ce.expiring + ce.expired, ce.expired ? `${ce.expired} süresi dolmuş` : "yaklaşan bitiş", ce.expired ? "bad" : ce.expiring ? "warn" : "")}
   </div>
-  ${summaryBlock(sm)}
-  <div class="grid g3">
-    <div class="card"><h2>Risk dağılımı</h2>${stackedBar([
-      { l: "Yüksek", v: d.risk["yüksek"], c: "var(--bad)" }, { l: "Orta", v: d.risk["orta"], c: "var(--warn)" },
-      { l: "Düşük", v: d.risk["düşük"], c: "var(--ok)" }, { l: "Değerlendirilmedi", v: d.risk["bilinmiyor"], c: "var(--border)" }])}</div>
-    <div class="card"><h2>Açık bulgular (önem)</h2>${stackedBar([
-      { l: "Kritik", v: d.severity["kritik"], c: "var(--crit)" }, { l: "Yüksek", v: d.severity["yüksek"], c: "var(--bad)" },
-      { l: "Orta", v: d.severity["orta"], c: "var(--warn)" }, { l: "Düşük", v: d.severity["düşük"], c: "var(--info)" }])}</div>
-    <div class="card"><h2>Siber güvenlik notları</h2>${stackedBar("ABCDF".split("").map((g, i) => ({
-      l: g, v: d.grades[g], c: ["var(--ok)", "var(--ok)", "var(--warn)", "var(--bad)", "var(--crit)"][i] })))}</div>
-  </div>
-  <div class="card"><h2>Tedarikçi risk sıralaması</h2>
-    ${d.ranking.length ? `<div class="table-wrap"><table><thead><tr><th>Tedarikçi</th><th>Kritiklik</th><th>Risk</th><th>Genel puan</th><th>Denetim</th><th>Siber</th><th class="num">Açık bulgu</th><th>Son denetim</th></tr></thead><tbody>
-    ${d.ranking.map((s) => `<tr><td><a href="#/tedarikci/${s.id}">${esc(s.name)}</a></td><td>${esc(s.criticality)}</td><td>${riskBadge(s.risk)}</td>
-      <td style="min-width:140px">${meter(s.overall_score)}</td><td>${num(s.audit_score)}</td><td>${gradeBox(s.intel_grade)}</td>
-      <td class="num">${s.open_findings}${s.critical_findings ? ` <span class="badge b-crit">${s.critical_findings} kritik</span>` : ""}</td><td>${fmtDate(s.last_audit_date)}</td></tr>`).join("")}
-    </tbody></table></div>` : `<div class="empty">Henüz tedarikçi yok. <a href="#/tedarikciler">İlk tedarikçiyi ekleyin</a>.</div>`}
-  </div>
-  <div class="grid g2">
-    <div class="card"><h2>Süresi geçmiş aksiyonlar</h2>
-      ${d.overdue.length ? `<table><tbody>${d.overdue.map((f) => `<tr><td>${sevBadge(f.severity)}</td><td>${esc(f.title)}<div class="small muted"><a href="#/tedarikci/${f.supplier_id}">${esc(f.supplier_name)}</a> · Sorumlu: ${esc(f.owner || "—")}</div></td><td class="small" style="color:var(--bad)">${fmtDate(f.due_date)}</td></tr>`).join("")}</tbody></table>`
-        : `<div class="empty">Süresi geçmiş aksiyon yok 👍</div>`}</div>
-    <div class="card"><h2>Planlanan denetimler</h2>
-      ${d.upcoming.length ? `<table><tbody>${d.upcoming.map((a) => `<tr><td>${fmtDate(a.audit_date)}</td><td><a href="#/denetim/${a.id}">${esc(a.supplier_name)}</a><div class="small muted">${esc(a.audit_type)} · ${esc(a.auditor || "—")}</div></td><td>${statusBadge(a.status)}</td></tr>`).join("")}</tbody></table>`
-        : `<div class="empty">Planlı denetim yok.</div>`}
-      ${d.stale.length ? `<h3>Son 12 ayda denetlenmemiş (orta/yüksek kritik)</h3><div class="chips">${d.stale.map((s) => `<a class="chip" href="#/tedarikci/${s.id}">${esc(s.name)}</a>`).join("")}</div>` : ""}
+
+  <div class="card flush">
+    <div class="card-head"><h2>Tedarikçi risk tablosu</h2><span class="small muted" id="cnt"></span></div>
+    <div class="toolbar">
+      <input id="fq" class="search" placeholder="Tedarikçi veya kategori ara…" style="width:auto">
+      <select id="fr" style="width:auto"><option value="">Tüm riskler</option><option value="yüksek">Yüksek</option><option value="orta">Orta</option><option value="düşük">Düşük</option><option value="bilinmiyor">Değerlendirilmedi</option></select>
+      <select id="ft" style="width:auto"><option value="">Tüm tier'lar</option>${[...new Map(d.ranking.filter((x) => x.tier_id).map((x) => [x.tier_id, x.tier_name]))].sort().map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join("")}<option value="-">Tier atanmamış</option></select>
+      <select id="fk" style="width:auto"><option value="">Tüm kritiklikler</option><option>yüksek</option><option>orta</option><option>düşük</option></select>
+      <label class="te-small" style="margin-left:4px"><input type="checkbox" id="fa"> Yalnızca aksiyon gerekenler</label>
+      <span class="grow"></span><button class="sm ghost" id="fclr">Filtreleri temizle</button>
     </div>
+    <div class="table-wrap" id="rt"></div>
+  </div>
+
+  <div class="grid g3" style="margin-top:12px">
+    <div class="card flush"><div class="card-head"><h2>Onay bekleyen CAPA</h2><a class="small muted" href="#/capa?status=onay bekliyor">Tümü →</a></div>
+      ${pend.length ? `<table class="dense"><tbody>${pend.slice(0, 6).map((x) => `<tr><td><a href="#/capa/${x.id}">${esc(x.title.length > 70 ? x.title.slice(0, 70) + "…" : x.title)}</a><div class="small muted">${esc(x.supplier_name)} · ${x.round}. gönderim</div></td><td class="num">${sevBadge(x.severity)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Onay bekleyen CAPA yok.</div>`}</div>
+    <div class="card flush"><div class="card-head"><h2>Sertifika bitişleri</h2><span class="small muted">60 gün</span></div>
+      ${ce.items.length ? `<table class="dense"><tbody>${ce.items.slice(0, 6).map((x) => `<tr><td>${esc(x.title || x.original_name)}<div class="small muted">${esc(x.supplier_name)}</div></td>
+        <td class="num small">${fmtDate(x.expires_at)}<div>${x.days_left < 0 ? `<span class="badge b-bad">${-x.days_left} gün geçti</span>` : `<span class="badge b-warn">${x.days_left} gün</span>`}</div></td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Yaklaşan sertifika bitişi yok.</div>`}</div>
+    <div class="card flush"><div class="card-head"><h2>Planlanan denetimler</h2><a class="small muted" href="#/denetimler">Tümü →</a></div>
+      ${d.upcoming.length ? `<table class="dense"><tbody>${d.upcoming.slice(0, 6).map((a) => `<tr><td><a href="#/denetim/${a.id}">${esc(a.supplier_name)}</a><div class="small muted">${esc(a.audit_type)}${a.auditor ? " · " + esc(a.auditor) : ""}</div></td><td class="num small">${fmtDate(a.audit_date)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Planlı denetim yok.</div>`}</div>
   </div>`;
+
+  // ---- risk tablosu: filtre + sıralama (tercihler tarayıcıda hatırlanır)
+  const RANK = { yüksek: 0, orta: 1, düşük: 2, bilinmiyor: 3 }, CRIT = { yüksek: 0, orta: 1, düşük: 2 };
+  const DEC = { rejected: 0, improvement_required: 1, conditional: 2, approved: 3 };
+  const cols = [
+    ["name", "Tedarikçi", (x) => x.name.toLocaleLowerCase("tr")],
+    ["tier", "Tier", (x) => x.tier_level ?? 99],
+    ["crit", "Kritiklik", (x) => CRIT[x.criticality] ?? 9],
+    ["risk", "Risk", (x) => RANK[x.risk] ?? 9],
+    ["dec", "Son karar", (x) => DEC[x.audit_decision] ?? 9],
+    ["score", "Puan", (x) => x.overall_score ?? -1, "num"],
+    ["intel", "Siber", (x) => x.intel_score ?? -1, "num"],
+    ["capa", "Açık CAPA", (x) => x.open_capa, "num"],
+    ["late", "Geciken", (x) => x.overdue_capa + x.overdue_findings, "num"],
+    ["cert", "Sertifika", (x) => x.next_cert_expiry || "9999"],
+    ["last", "Son denetim", (x) => x.last_audit_date || "0000"],
+    ["next", "Sonraki", (x) => x.next_audit_date || "9999"],
+  ];
+  let sort = store.get("dash.sort", { k: "risk", dir: 1 });
+  const f = store.get("dash.filter", {});
+  const el = (id) => document.getElementById(id);
+  el("fq").value = f.q || ""; el("fr").value = f.r || ""; el("ft").value = f.t || ""; el("fk").value = f.k || ""; el("fa").checked = !!f.a;
+  const needsAction = (x) => x.risk === "yüksek" || x.overdue_capa > 0 || x.overdue_findings > 0 || x.pending_capa > 0 || (x.next_cert_expiry && daysTo(x.next_cert_expiry) < 0);
+  let shown = [];
+  const draw = () => {
+    const q = el("fq").value.trim().toLocaleLowerCase("tr"), r = el("fr").value, tr = el("ft").value, k = el("fk").value, act = el("fa").checked;
+    store.set("dash.filter", { q, r, t: tr, k, a: act });
+    shown = d.ranking.filter((x) => (!q || `${x.name} ${x.category || ""}`.toLocaleLowerCase("tr").includes(q)) && (!r || x.risk === r)
+      && (!tr || (tr === "-" ? !x.tier_id : String(x.tier_id) === tr)) && (!k || x.criticality === k) && (!act || needsAction(x)));
+    const key = cols.find((c) => c[0] === sort.k) || cols[3];
+    shown.sort((a, b) => { const va = key[2](a), vb = key[2](b); return (va < vb ? -1 : va > vb ? 1 : 0) * sort.dir || a.name.localeCompare(b.name, "tr"); });
+    el("cnt").textContent = `${shown.length} / ${d.ranking.length} tedarikçi`;
+    el("rt").innerHTML = `<table><thead><tr>${cols.map(([id, l, , cls]) => `<th class="sortable ${cls || ""} ${sort.k === id ? "sorted" : ""}" data-k="${id}">${l}<span class="arr">${sort.k === id ? (sort.dir > 0 ? "↑" : "↓") : "↕"}</span></th>`).join("")}</tr></thead><tbody>
+      ${shown.length ? shown.map((x) => { const cd = daysTo(x.next_cert_expiry); return `<tr>
+        <td><a href="#/tedarikci/${x.id}"><b>${esc(x.name)}</b></a>${x.category ? `<div class="small muted">${esc(x.category)}</div>` : ""}</td>
+        <td class="small">${x.tier_level ? `<span class="badge">T${x.tier_level}</span>` : `<span class="muted">—</span>`}</td>
+        <td class="small">${esc(x.criticality)}</td>
+        <td>${riskPill(x.risk)}</td>
+        <td>${x.audit_decision ? decisionBadge(x.audit_decision) : `<span class="muted small">—</span>`}</td>
+        <td class="num"><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end"><div class="meter" style="width:56px;min-width:56px">${x.overall_score == null ? "" : `<div style="width:${x.overall_score}%;background:${x.audit_decision === "rejected" ? "var(--crit)" : scoreColor(x.overall_score)}"></div>`}</div><span style="min-width:30px">${num(x.overall_score)}</span></div></td>
+        <td class="num">${gradeBox(x.intel_grade)}</td>
+        <td class="num">${x.open_capa || `<span class="muted">0</span>`}${x.pending_capa ? ` <span class="badge b-warn" title="Onay bekleyen">${x.pending_capa}</span>` : ""}</td>
+        <td class="num">${x.overdue_capa + x.overdue_findings ? `<span style="color:var(--bad);font-weight:600">${x.overdue_capa + x.overdue_findings}</span>` : `<span class="muted">0</span>`}</td>
+        <td class="small">${x.next_cert_expiry ? `${fmtDate(x.next_cert_expiry)} ${cd < 0 ? `<span class="badge b-bad">doldu</span>` : cd <= 60 ? `<span class="badge b-warn">${cd} g</span>` : ""}` : `<span class="muted">—</span>`}</td>
+        <td class="small">${fmtDate(x.last_audit_date)}</td>
+        <td class="small">${fmtDate(x.next_audit_date)}</td></tr>`; }).join("")
+      : `<tr><td colspan="${cols.length}" class="empty">Filtrelere uyan tedarikçi yok.</td></tr>`}</tbody></table>`;
+    el("rt").querySelectorAll("th.sortable").forEach((th) => (th.onclick = () => {
+      sort = sort.k === th.dataset.k ? { k: sort.k, dir: -sort.dir } : { k: th.dataset.k, dir: 1 };
+      store.set("dash.sort", sort); draw();
+    }));
+  };
+  ["fq"].forEach((i) => (el(i).oninput = draw));
+  ["fr", "ft", "fk", "fa"].forEach((i) => (el(i).onchange = draw));
+  el("fclr").onclick = () => { el("fq").value = ""; el("fr").value = ""; el("ft").value = ""; el("fk").value = ""; el("fa").checked = false; draw(); };
+  const exp = el("exp");
+  if (exp) exp.onclick = () => {
+    const head = ["Tedarikçi", "Kategori", "Tier", "Kritiklik", "Risk", "Son karar", "Genel puan", "Denetim puanı", "Siber puan", "Açık CAPA", "Onay bekleyen", "Geciken CAPA", "Gecikmiş bulgu", "En yakın sertifika bitişi", "Son denetim", "Sonraki denetim"];
+    const rowsCsv = shown.map((x) => [x.name, x.category, x.tier_name, x.criticality, x.risk, x.audit_decision ? DECISION[x.audit_decision][1] : "", x.overall_score, x.audit_score, x.intel_score,
+      x.open_capa, x.pending_capa, x.overdue_capa, x.overdue_findings, x.next_cert_expiry, x.last_audit_date, x.next_audit_date]);
+    const cell = (v) => { let s2 = String(v ?? ""); if (/^[=+\-@]/.test(s2)) s2 = "'" + s2; return `"${s2.replace(/"/g, '""')}"`; };
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(["﻿" + [head, ...rowsCsv].map((r) => r.map(cell).join(";")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
+    a.download = `tedarikci-risk-${todayISO()}.csv`; a.click();
+  };
+  draw();
 }
 
 // ================================================================ TEDARİKÇİLER
@@ -251,7 +323,7 @@ async function viewSuppliers() {
       <td><a href="#/tedarikci/${s.id}"><b>${esc(s.name)}</b></a><div class="small muted">${esc(s.country || "")}</div></td>
       <td>${esc(s.category || "—")}</td><td>${esc(s.criticality)}</td>
       <td><div class="chips">${s.domains.map((d) => `<span class="chip">${esc(d)}</span>`).join("") || `<span class="muted">—</span>`}</div></td>
-      <td>${num(s.summary.audit_score)} ${ratingBadge(s.summary.audit_rating)}</td><td>${gradeBox(s.summary.intel_grade)}</td>
+      <td>${num(s.summary.audit_score)} ${s.summary.audit_decision ? decisionBadge(s.summary.audit_decision) : ratingBadge(s.summary.audit_rating)}</td><td>${gradeBox(s.summary.intel_grade)}</td>
       <td>${riskBadge(s.summary.risk)}</td><td class="num">${s.summary.open_findings}</td><td>${statusBadge(s.status)}</td></tr>`).join("")
       : `<tr><td colspan="9" class="empty">Kayıt yok.</td></tr>`;
   };
@@ -317,8 +389,8 @@ async function viewSupplier(id, tab = "ozet") {
     <div class="actions"><button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
   <div class="kpis">
     <div class="kpi"><div class="l">Risk seviyesi</div><div class="v">${riskBadge(sm.risk)}</div></div>
-    <div class="kpi"><div class="l">Genel puan</div><div class="v" style="color:${scoreColor(sm.overall_score)}">${num(sm.overall_score)}</div></div>
-    <div class="kpi"><div class="l">Son denetim puanı</div><div class="v">${num(sm.audit_score)}</div><div class="l">${ratingBadge(sm.audit_rating)} ${fmtDate(sm.last_audit_date)}</div></div>
+    <div class="kpi"><div class="l">Genel puan</div><div class="v" style="color:${sm.audit_decision === "rejected" ? "var(--crit)" : scoreColor(sm.overall_score)}">${num(sm.overall_score)}</div></div>
+    <div class="kpi"><div class="l">Son denetim puanı</div><div class="v">${num(sm.audit_score)}</div><div class="l">${sm.audit_decision ? decisionBadge(sm.audit_decision) : ratingBadge(sm.audit_rating)} ${fmtDate(sm.last_audit_date)}</div></div>
     <div class="kpi"><div class="l">Siber güvenlik notu</div><div class="v">${gradeBox(sm.intel_grade)} <span style="font-size:16px">${num(sm.intel_score)}</span></div><div class="l">${sm.last_scan ? "Tarama: " + fmtDT(sm.last_scan) : "Henüz taranmadı"}</div></div>
     <div class="kpi"><div class="l">Açık / gecikmiş bulgu</div><div class="v">${sm.open_findings} <span style="font-size:16px;color:var(--bad)">/ ${sm.overdue_findings}</span></div></div>
   </div>
@@ -1409,29 +1481,6 @@ function capaForm(supplierId, findingId = null) {
   });
 }
 
-
-// ================================================================ ÖZET
-const RISK_TR = { high: "Yüksek", medium: "Orta", low: "Düşük", none: "Denetlenmedi" };
-function summaryBlock(sm) {
-  const r = sm.risk_distribution, c = sm.capa, ce = sm.certificates;
-  return `<div class="grid g3">
-    <div class="card"><h2>Risk seviyesi (son denetim)</h2>${stackedBar([
-      { l: RISK_TR.high, v: r.high, c: "var(--bad)" }, { l: RISK_TR.medium, v: r.medium, c: "var(--warn)" },
-      { l: RISK_TR.low, v: r.low, c: "var(--ok)" }, { l: RISK_TR.none, v: r.none, c: "var(--border)" }])}
-      ${sm.rejected_suppliers ? `<div class="small" style="margin-top:8px;color:var(--crit)"><b>${sm.rejected_suppliers}</b> tedarikçinin son denetimi reddedildi</div>` : ""}</div>
-    <div class="card"><h2>Açık CAPA <span class="muted small">· ${c.open}</span></h2>
-      <div class="kpis" style="grid-template-columns:repeat(3,1fr);gap:8px;margin:0">
-        <a class="kpi" href="#/capa?status=açık" style="padding:8px"><div class="v" style="font-size:20px">${c.by_status["açık"]}</div><div class="l">Tedarikçide</div></a>
-        <a class="kpi" href="#/capa?status=onay bekliyor" style="padding:8px"><div class="v" style="font-size:20px;color:var(--warn)">${c.by_status["onay bekliyor"]}</div><div class="l">Onay bekliyor</div></a>
-        <a class="kpi" href="#/capa?status=reddedildi" style="padding:8px"><div class="v" style="font-size:20px;color:var(--crit)">${c.by_status["reddedildi"]}</div><div class="l">Reddedildi</div></a></div>
-      <div class="small" style="margin-top:8px">${c.overdue ? `<b style="color:var(--bad)">${c.overdue} CAPA'nın termini geçti</b> · ` : ""}${c.by_severity["kritik"]} kritik · ${c.by_severity["yüksek"]} yüksek</div></div>
-    <div class="card"><h2>Sertifika bitişleri <span class="muted small">· ${ce.window_days} gün</span></h2>
-      ${ce.items.length ? `<table class="small"><tbody>${ce.items.slice(0, 6).map((x) => `<tr><td>${esc(x.supplier_name)}<div class="muted">${esc(x.title || x.original_name)}</div></td>
-        <td style="white-space:nowrap">${fmtDate(x.expires_at)}<div>${x.days_left < 0 ? `<span class="badge b-crit">${-x.days_left} gün geçti</span>` : `<span class="badge b-warn">${x.days_left} gün</span>`}</div></td></tr>`).join("")}</tbody></table>
-        ${ce.items.length > 6 ? `<div class="small muted">+${ce.items.length - 6} sertifika daha</div>` : ""}`
-        : `<div class="empty small">Yaklaşan sertifika bitişi yok.</div>`}</div>
-  </div>`;
-}
 
 // ================================================================ WEBHOOK ABONELİKLERİ
 const EVENT_TR = { "*": "Tüm olaylar", "finding.created": "Yeni bulgu", "finding.status_changed": "Bulgu durumu değişti", "capa.created": "CAPA açıldı",

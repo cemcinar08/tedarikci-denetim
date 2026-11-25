@@ -219,6 +219,11 @@ def _summary(db, s: dict) -> dict:
              SUM(status!='kapandı' AND severity='kritik') AS critical,
              SUM(status!='kapandı' AND due_date IS NOT NULL AND due_date < ?) AS overdue
            FROM findings WHERE supplier_id=?""", (today(), sid)).fetchone()
+    cp = db.execute(
+        "SELECT SUM(status!='onaylandı') AS open, SUM(status!='onaylandı' AND due_date < ?) AS overdue, "
+        "SUM(status='onay bekliyor') AS pending FROM capa_items WHERE supplier_id=?", (today(), sid)).fetchone()
+    cert = db.execute("SELECT MIN(expires_at) FROM evidence_files WHERE supplier_id=? AND kind='sertifika' AND expires_at IS NOT NULL",
+                      (sid,)).fetchone()[0]
     audit = last_audit["score"] if last_audit else None
     parts = [(audit, 0.6), (intel, 0.4)]
     parts = [(v, w) for v, w in parts if v is not None]
@@ -239,6 +244,9 @@ def _summary(db, s: dict) -> dict:
     return {
         "audit_score": audit, "audit_rating": cl.rating(audit),
         "audit_decision": last_audit["decision"] if last_audit else None,
+        "audit_risk_level": last_audit["risk_level"] if last_audit else None,
+        "open_capa": cp["open"] or 0, "overdue_capa": cp["overdue"] or 0, "pending_capa": cp["pending"] or 0,
+        "next_cert_expiry": cert,
         "last_audit_date": last_audit["audit_date"] if last_audit else None,
         "next_audit_date": next_audit["audit_date"] if next_audit else None,
         "intel_score": intel,
@@ -667,7 +675,8 @@ def dashboard():
         w, p = scoped("id")
         wf, pf = scoped("f.supplier_id")
         wa, pa = scoped("a.supplier_id")
-        for s in rows(db.execute("SELECT * FROM suppliers WHERE status!='pasif'" + w, p).fetchall()):
+        for s in rows(db.execute("SELECT s.*, t.name AS tier_name, t.level AS tier_level FROM suppliers s "
+                                 "LEFT JOIN supplier_tiers t ON t.id=s.tier_id WHERE s.status!='pasif'" + w.replace("id=", "s.id="), p).fetchall()):
             s["summary"] = _summary(db, s)
             sups.append(s)
         risk = {k: 0 for k in ("yüksek", "orta", "düşük", "bilinmiyor")}
@@ -691,7 +700,8 @@ def dashboard():
                 s["summary"]["last_audit_date"] < (dt.date.today() - dt.timedelta(days=365)).isoformat())
         ]
         ranking = sorted(
-            [{"id": s["id"], "name": s["name"], "criticality": s["criticality"], **s["summary"]} for s in sups],
+            [{"id": s["id"], "name": s["name"], "criticality": s["criticality"], "category": s["category"],
+              "tier_name": s["tier_name"], "tier_level": s["tier_level"], "tier_id": s["tier_id"], **s["summary"]} for s in sups],
             key=lambda x: ({"yüksek": 0, "orta": 1, "düşük": 2, "bilinmiyor": 3}[x["risk"]],
                            x["overall_score"] if x["overall_score"] is not None else 999))
         closed_30 = db.execute(

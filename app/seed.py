@@ -24,9 +24,12 @@ def main():
             print("Veritabanında zaten kayıt var; örnek veri yüklenmedi.")
             return
         set_ids = {r["key"]: r["id"] for r in db.execute("SELECT id, key FROM audit_templates WHERE key IS NOT NULL")}
+        tier_ids = {r["level"]: r["id"] for r in db.execute("SELECT id, level FROM supplier_tiers")}
 
     for i, (name, cat, country, crit, domains, keys) in enumerate(SUPPLIERS):
+        level = {"yüksek": 1, "orta": 2, "düşük": 3}[crit]
         s = m.create_supplier(m.SupplierIn(name=name, category=cat, country=country, criticality=crit, domains=domains,
+                                           tier_id=tier_ids.get(level),
                                            contact_name="Satın Alma Yetkilisi",
                                            email=f"info@{domains[0] if domains else 'ornek.com.tr'}"))
         ids = [set_ids[k] for k in keys]
