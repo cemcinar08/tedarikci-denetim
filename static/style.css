@@ -256,3 +256,5 @@ input[readonly], select:disabled { background: var(--muted-bg); }
   main { padding: 0; max-width: none; }
   .card { break-inside: avoid; border-color: #ccc; }
 }
+
+.ai-sug { margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 6px; background: var(--muted-bg); font-size: 13px; }

@@ -652,6 +652,7 @@ async function viewSettings() {
   <div class="card" style="margin-top:16px" id="tkcard"></div>
   <div class="card" style="margin-top:16px" id="ssocard"></div>
   <div class="card" style="margin-top:16px" id="wcard"></div>
+  <div class="card" style="margin-top:16px" id="aicard"></div>
   <div class="card" style="margin-top:16px" id="sancard"></div>
   <div class="card" style="margin-top:16px" id="whcard"></div>
   <div class="card" style="margin-top:16px"><h2>Tedarikçi sistemleri için entegrasyon bilgisi</h2><div class="small">
@@ -667,6 +668,7 @@ async function viewSettings() {
   schedulerAdmin(document.getElementById("schcard"));
   ticketingAdmin(document.getElementById("tkcard"));
   ssoAdmin(document.getElementById("ssocard"));
+  aiAdmin(document.getElementById("aicard"));
   sanctionsAdmin(document.getElementById("sancard"));
   document.getElementById("sf").onsubmit = async (e) => {
     e.preventDefault();
@@ -1119,6 +1121,7 @@ async function viewAudit(id) {
     };
     return;
   }
+  if (can("audit:write") && a.status !== "tamamlandı") aiReview(a, answers, notes, calc);
   const ret = document.getElementById("ret");
   if (ret) ret.onclick = () => {
     const comment = prompt("Tedarikçiye revizyon notu:");
@@ -1997,6 +2000,71 @@ async function ticketingAdmin(root) {
     try { await api("/api/integrations/ticketing", { method: "PUT", body: d }); toast("Kaydedildi"); ticketingAdmin(root); } catch (err) { toast(err.message); }
   };
   root.querySelector("#tkt").onclick = () => api("/api/integrations/ticketing/test", { method: "POST" }).then((r) => toast("Bağlantı başarılı — " + r.message, 6000)).catch((e) => toast(e.message, 7000));
+}
+
+// ================================================================ AI KANIT İNCELEMESİ
+const aiNote = (s) => `AI önerisi: ${s.rationale}` + (s.citations.length ? ` (Kaynak: ${s.citations.slice(0, 3).map((c) => c.document + (c.page_start ? ` s.${c.page_start}` : "")).join("; ")})` : "");
+const AI_LBL = { uygun: "Uygun", "kısmen": "Kısmen", "uygun değil": "Uygun değil", belirsiz: "Belirsiz" };
+
+async function aiReview(a, answers, notes, calc) {
+  const side = document.createElement("div");
+  side.className = "card";
+  document.getElementById("sidecards").prepend(side);
+  const draw = (items) => {
+    const open = items.filter((s) => s.status === "öneri");
+    side.innerHTML = `<h2>AI kanıt incelemesi</h2>
+      <div class="small muted" style="margin-bottom:8px">Yüklenen PDF/metin kanıtlarını Claude ile okuyup cevapsız sorulara kaynak gösteren öneri üretir. Öneriler siz onaylamadan uygulanmaz. Belgeler Anthropic'e gönderilir.</div>
+      ${open.length ? `<div class="small" style="margin-bottom:8px"><b>${open.length}</b> bekleyen öneri — soruların altında.</div>` : ""}
+      <button class="primary" id="airun" style="width:100%">AI ile kanıt incele</button>`;
+    side.querySelector("#airun").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "İnceleniyor… (1-3 dk)";
+      try {
+        const r = await api(`/api/audits/${a.id}/ai-review`, { method: "POST", body: {} });
+        toast(`${r.documents} belge, ${r.questions} soru incelendi → ${r.suggestions} öneri` + (r.skipped.length ? `. Atlanan: ${r.skipped.join(", ")}` : ""), 8000);
+        draw(r.items);
+      } catch (err) { toast(err.message, 8000); draw(items); }
+    };
+    $app.querySelectorAll(".ai-sug").forEach((x) => x.remove());
+    for (const s of open) {
+      const el = $app.querySelector(`.q[data-q="${CSS.escape(s.question_id)}"]`);
+      if (!el) continue;
+      const box = document.createElement("div");
+      box.className = "ai-sug";
+      box.innerHTML = `<div><span class="badge">AI önerisi</span> <b>${esc(AI_LBL[s.answer] || s.answer)}</b> — ${esc(s.rationale)}</div>
+        ${s.citations.map((c) => `<div class="small muted" style="margin-top:4px">📄 ${c.evidence_id ? `<a href="/api/evidence/${c.evidence_id}/download">${esc(c.document || "")}</a>` : esc(c.document || "")}${c.page_start ? ` · s.${c.page_start}${c.page_end && c.page_end !== c.page_start ? "-" + c.page_end : ""}` : ""}${c.quote ? `: “${esc(c.quote.slice(0, 220))}”` : ""}</div>`).join("")}
+        <div class="actions" style="margin-top:6px">${s.answer !== "belirsiz" ? `<button type="button" class="sm primary" data-d="accept">Kabul et</button>` : ""}<button type="button" class="sm" data-d="reject">Reddet</button></div>`;
+      box.querySelectorAll("[data-d]").forEach((b) => (b.onclick = async () => {
+        try {
+          await api(`/api/ai-suggestions/${s.id}/decide`, { method: "POST", body: { decision: b.dataset.d } });
+          if (b.dataset.d === "accept") {
+            answers[s.question_id] = s.answer;
+            notes[s.question_id] = (notes[s.question_id] ? notes[s.question_id] + "\n" : "") + aiNote(s);
+            el.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("on", x.dataset.v === s.answer));
+            el.querySelector(".note").value = notes[s.question_id];
+            calc();
+          }
+          s.status = b.dataset.d === "accept" ? "kabul" : "red";
+          draw(items);
+        } catch (err) { toast(err.message, 6000); }
+      }));
+      el.appendChild(box);
+    }
+  };
+  draw(await api(`/api/audits/${a.id}/ai-suggestions`).catch(() => []));
+}
+
+async function aiAdmin(root) {
+  const c = await api("/api/integrations/ai");
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">AI kanıt incelemesi (Claude)</h2>
+    <div class="small muted">Denetim ekranındaki "AI ile kanıt incele" düğmesi için Anthropic API anahtarı. Kullanım Anthropic tarafından ücretlendirilir; belgeler incelenmek üzere Anthropic'e gönderilir. Model: <code>${esc(c.model)}</code>.</div></div>
+    ${c.key_set || c.env_key ? `<span class="badge b-ok">hazır</span>` : `<span class="badge">anahtar yok</span>`}</div>
+  <form id="aif" class="row"><div style="grid-column:span 2"><label>API anahtarı ${c.key_set ? `<span class="badge b-ok">kayıtlı</span>` : ""}</label>
+    <input type="password" name="api_key" autocomplete="off" placeholder="${c.key_set ? "Değiştirmek için yazın" : "sk-ant-…"}"></div>
+    <div class="actions" style="align-items:flex-end"><button class="primary">Kaydet</button>${c.key_set ? `<button type="button" id="aidel">Anahtarı sil</button>` : ""}</div></form>
+  <div class="small muted" style="margin-top:6px">Anahtarı <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> adresinden alabilirsiniz. Model bir isteği reddederse yanıt otomatik olarak yedek modelle tamamlanır.</div>`;
+  const put = (k) => api("/api/integrations/ai", { method: "PUT", body: { api_key: k } }).then(() => { toast("Kaydedildi"); aiAdmin(root); }).catch((e) => toast(e.message, 6000));
+  root.querySelector("#aif").onsubmit = (e) => { e.preventDefault(); const k = e.target.api_key.value.trim(); if (k) put(k); };
+  const d = root.querySelector("#aidel"); if (d) d.onclick = () => confirm("AI anahtarı silinsin mi?") && put("");
 }
 
 async function ssoAdmin(root) {

@@ -9,6 +9,7 @@
 - `app/templates_engine.py` — koşullu soru + puanlama/kill-switch (saf); `app/template_store.py` — şablon DB erişimi
 - `app/capa.py`, `app/evidence.py`, `app/events.py`, `app/summary.py`, `app/notify.py` — servisler
 - `app/ticketing.py` — Jira/ServiceNow; `app/sso.py` — OIDC tek oturum açma
+- `app/ai_review.py` — Claude ile kanıt incelemesi (kaynaklı öneri; denetçi onayı şart)
 - `app/scheduler.py` — arka plan görevleri (izleme, yeniden değerlendirme, hatırlatma) ve alarm merkezi
 - `app/assessments.py` — tedarikçi öz-değerlendirmesi (gönder/cevapla/incele)
 - `app/exceptions.py` — bulgu itirazı / risk kabulü onay akışı

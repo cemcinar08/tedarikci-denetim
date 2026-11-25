@@ -73,6 +73,8 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("GET", r"/api/audits", "audit:read"), ("GET", rf"/api/audits/{_R}", "audit:read"),
     ("PUT", rf"/api/audits/{_R}", "audit:write"), ("DELETE", rf"/api/audits/{_R}", "audit:write"),
     ("POST", rf"/api/audits/{_R}/generate-findings", "finding:write"),
+    ("POST", rf"/api/audits/{_R}/ai-review", "audit:write"), ("GET", rf"/api/audits/{_R}/ai-suggestions", "audit:write"),
+    ("POST", rf"/api/ai-suggestions/{_R}/decide", "audit:write"),
     ("POST", rf"/api/suppliers/{_R}/self-assessments", "audit:write"), ("POST", rf"/api/audits/{_R}/return", "audit:write"),
     ("PUT", rf"/api/audits/{_R}/respond", "assessment:respond"), ("POST", rf"/api/audits/{_R}/submit", "assessment:respond"),
     ("GET", r"/api/question-sets(/.*)?", "template:read"),

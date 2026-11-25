@@ -421,6 +421,30 @@ CREATE TABLE IF NOT EXISTS sso_states (
     created   REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_runs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id       INTEGER NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
+    model          TEXT,
+    questions      INTEGER, documents INTEGER, suggestions INTEGER,
+    input_tokens   INTEGER, output_tokens INTEGER,
+    created_by     TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id     INTEGER NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
+    run_id       INTEGER REFERENCES ai_runs(id) ON DELETE CASCADE,
+    question_id  TEXT NOT NULL,
+    answer       TEXT NOT NULL,
+    rationale    TEXT,
+    citations    TEXT,                 -- JSON [{evidence_id, document, page_start, page_end, quote}]
+    status       TEXT NOT NULL DEFAULT 'öneri',   -- öneri / kabul / red / eski
+    decided_by   TEXT,
+    decided_at   TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
