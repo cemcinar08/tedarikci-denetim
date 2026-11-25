@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -726,6 +726,34 @@ def response_page(token: str):
     return FileResponse(STATIC / "yanit.html", headers={"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"})
 
 
+def _asset_version() -> str:
+    return str(int(max((STATIC / f).stat().st_mtime for f in ("app.js", "style.css"))))
+
+
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC / "index.html")
+    """Sürüm etiketiyle (?v=...) sunulur: güncellemeden sonra tarayıcı eski JS/CSS'i kullanmaz."""
+    v = _asset_version()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = html.replace('/static/app.js"', f'/static/app.js?v={v}"').replace('/static/style.css"', f'/static/style.css?v={v}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+class NoCacheStatic:
+    """Statik dosyalar her açılışta sunucuyla doğrulanır (ETag ile; değişmediyse yeniden indirilmez)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/static/"):
+            return await self.app(scope, receive, send)
+
+        async def _send(msg):
+            if msg["type"] == "http.response.start":
+                msg["headers"] = [h for h in msg.get("headers", []) if h[0].lower() != b"cache-control"] + [(b"cache-control", b"no-cache")]
+            await send(msg)
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(NoCacheStatic)
