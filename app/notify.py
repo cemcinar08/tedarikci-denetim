@@ -230,7 +230,7 @@ def render_email(p: dict) -> tuple[str, str, str]:
     text = "\n".join(lines)
 
     e = html.escape
-    parts = [f"<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1d2330;max-width:720px'>",
+    parts = ["<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1d2330;max-width:720px'>",
              f"<p>Sayın <b>{e(p['supplier']['name'])}</b> yetkilisi,</p>",
              f"<p>{e(org)} tarafından yürütülen tedarikçi değerlendirmesi kapsamında aşağıdaki konular bilginize sunulmuştur.</p>"]
     if p["message"]:
@@ -365,7 +365,7 @@ async def dispatch(supplier_id: int, finding_ids: list[int], scan_id: int | None
             target = ", ".join(parse_emails(to_override or sup.get("notify_emails"))) or "(manuel)"
         else:
             raise HTTPException(422, f"Bilinmeyen kanal: {ch}")
-        status, error, code = "beklemede", None, None
+        status, error = "beklemede", None
         if ch == "email" and not smtp_ready(s):
             status, error = "başarısız", "SMTP ayarları yapılmamış (Ayarlar sayfası)."
         elif not target:

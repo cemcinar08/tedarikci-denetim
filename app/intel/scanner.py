@@ -485,7 +485,7 @@ async def scan_domain(domain: str) -> dict:
         )
     checks = list(dns_checks)
     names = ["TLS", "HTTP", "CT", "InternetDB", "RDAP"]
-    for n, g in zip(names, groups):
+    for n, g in zip(names, groups, strict=True):
         if isinstance(g, Exception):
             checks.append(Check(f"error.{n.lower()}", "Sistem", f"{n} kontrolü", "error",
                                 f"{type(g).__name__}: {g}", weight=0))

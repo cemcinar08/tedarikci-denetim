@@ -260,7 +260,8 @@ def test_question_set_unique_names(client):
 def test_webhook_signature():
     from app import notify
     sig = notify.sign("gizli", "1700000000", b'{"a":1}')
-    import hashlib, hmac
+    import hashlib
+    import hmac
     assert sig == "sha256=" + hmac.new(b"gizli", b'1700000000.{"a":1}', hashlib.sha256).hexdigest()
 
 
