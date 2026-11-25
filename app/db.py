@@ -457,6 +457,8 @@ MIGRATIONS = {
                "due_date": "TEXT", "sent_at": "TEXT", "submitted_at": "TEXT", "submitted_by": "TEXT", "review_comment": "TEXT"},
     "suppliers": {
         "tier_id": "INTEGER REFERENCES supplier_tiers(id) ON DELETE SET NULL",
+        "lei": "TEXT",                           # Legal Entity Identifier (DORA bilgi kaydı)
+        "tax_no": "TEXT",                        # vergi / ticaret sicil no
         "notify_emails": "TEXT",                 # virgülle ayrılmış alıcılar
         "webhook_url": "TEXT",
         "webhook_secret": "TEXT",                # HMAC-SHA256 imza anahtarı

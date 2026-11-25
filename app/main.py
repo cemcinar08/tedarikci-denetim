@@ -65,6 +65,8 @@ class SupplierIn(BaseModel):
     status: Literal["aday", "aktif", "askıda", "çıkış sürecinde", "pasif"] = "aktif"
     notes: Optional[str] = None
     tier_id: Optional[int] = None
+    lei: Optional[str] = Field(default=None, max_length=20)
+    tax_no: Optional[str] = Field(default=None, max_length=40)
     # Bildirim ayarları
     notify_emails: Optional[str] = None     # virgülle ayrılmış
     webhook_url: Optional[str] = None

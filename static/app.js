@@ -219,7 +219,7 @@ async function viewDashboard() {
   $app.innerHTML = `
   ${isSupplier() ? await pendingAssessments() : ""}
   <div class="page-head"><div><h1>Genel bakış</h1><div class="muted">${isSupplier() ? esc(ME.supplier_name || "") + " · " : ""}${new Date().toLocaleDateString("tr-TR", { dateStyle: "long" })}</div></div>
-    <div class="actions">${can("report:read") ? `<button id="exp">CSV dışa aktar</button>` : ""}<a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">Tedarikçi ekle</a></div></div>
+    <div class="actions">${can("report:read") && !isSupplier() ? `<a class="btn" href="/api/reports/portfolio.pdf" target="_blank">Yönetim raporu (PDF)</a><a class="btn" href="/api/reports/dora-register.csv" title="DORA bilgi kaydı hazırlık çıktısı">DORA kaydı</a>` : ""}${can("report:read") ? `<button id="exp">CSV dışa aktar</button>` : ""}<a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">Tedarikçi ekle</a></div></div>
   <div class="metric-strip">
     ${metric("Aktif tedarikçi", t.suppliers, `${rk["bilinmiyor"]} değerlendirilmedi`)}
     ${metric("Yüksek risk", rk["yüksek"], `orta ${rk["orta"]} · düşük ${rk["düşük"]}`, rk["yüksek"] ? "bad" : "")}
@@ -365,6 +365,8 @@ async function supplierForm(s = {}, focus = null) {
     <div class="row"><div><label>Kritiklik</label>${sel("criticality", ["düşük", "orta", "yüksek"], s.criticality || "orta")}</div>
       <div><label>Durum</label>${sel("status", ["aday", "aktif", "askıda", "çıkış sürecinde", "pasif"], s.status || "aktif")}</div>
       <div><label>Ülke</label><input name="country" value="${esc(s.country || "")}"></div>
+      <div><label>LEI (DORA)</label><input name="lei" maxlength="20" value="${esc(s.lei || "")}"></div>
+      <div><label>Vergi / sicil no</label><input name="tax_no" value="${esc(s.tax_no || "")}"></div>
       <div><label>Seviye (tier)</label><select name="tier_id"><option value="">—</option>${tiers.map((t) => `<option value="${t.id}" ${t.id === s.tier_id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></div>
     <div class="row"><div><label>Yetkili</label><input name="contact_name" value="${esc(s.contact_name || "")}"></div>
       <div><label>E-posta</label><input name="email" type="email" value="${esc(s.email || "")}"></div>
