@@ -84,10 +84,75 @@ CREATE TABLE IF NOT EXISTS intel_scans (
     result       TEXT NOT NULL  -- JSON
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
+
+-- Tedarikçiye gönderilen bildirimler (e-posta / webhook)
+CREATE TABLE IF NOT EXISTS notifications (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id    INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    scan_id        INTEGER REFERENCES intel_scans(id) ON DELETE SET NULL,
+    kind           TEXT NOT NULL,              -- bulgu / istihbarat / test
+    channel        TEXT NOT NULL,              -- email / webhook
+    target         TEXT NOT NULL,              -- e-posta adres(ler)i veya webhook URL
+    subject        TEXT,
+    payload        TEXT,                       -- gönderilen JSON / e-posta metni
+    status         TEXT NOT NULL DEFAULT 'beklemede', -- beklemede / gönderildi / başarısız
+    error          TEXT,
+    response_code  INTEGER,
+    token          TEXT UNIQUE,                -- tedarikçinin yanıt linki / API anahtarı
+    auto           INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at        TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    viewed_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notification_findings (
+    notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    finding_id      INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    PRIMARY KEY (notification_id, finding_id)
+);
+
+-- Tedarikçiden gelen yanıtlar (yanıt sayfası veya API üzerinden)
+CREATE TABLE IF NOT EXISTS supplier_responses (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id  INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    finding_id       INTEGER REFERENCES findings(id) ON DELETE CASCADE,
+    status           TEXT NOT NULL,   -- okundu / aksiyon planlandı / giderildi / itiraz
+    comment          TEXT,
+    planned_date     TEXT,
+    responder        TEXT,
+    via              TEXT NOT NULL DEFAULT 'sayfa', -- sayfa / api
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_supplier ON notifications(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_resp_finding ON supplier_responses(finding_id);
 CREATE INDEX IF NOT EXISTS idx_audits_supplier ON audits(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_findings_supplier ON findings(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_scans_supplier ON intel_scans(supplier_id, domain);
 """
+
+
+MIGRATIONS = {
+    "audits": {"checklist": "TEXT", "set_names": "TEXT"},
+    "suppliers": {
+        "notify_emails": "TEXT",                 # virgülle ayrılmış alıcılar
+        "webhook_url": "TEXT",
+        "webhook_secret": "TEXT",                # HMAC-SHA256 imza anahtarı
+        "auto_notify": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "findings": {
+        "supplier_status": "TEXT",               # bildirildi / okundu / aksiyon planlandı / giderildi / itiraz
+        "supplier_comment": "TEXT",
+        "supplier_due_date": "TEXT",
+        "supplier_updated_at": "TEXT",
+        "notified_at": "TEXT",
+    },
+}
 
 
 def connect() -> sqlite3.Connection:
@@ -113,10 +178,11 @@ def init_db() -> None:
     with get_db() as db:
         db.executescript(SCHEMA)
         # Eski veritabanları için sütun ekleme (geçiş)
-        cols = {r["name"] for r in db.execute("PRAGMA table_info(audits)")}
-        for col in ("checklist", "set_names"):
-            if col not in cols:
-                db.execute(f"ALTER TABLE audits ADD COLUMN {col} TEXT")
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}
+            for col, typ in cols.items():
+                if col not in have:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         # Yerleşik soru setlerini yükle / güncelle
         for qs in BUILTIN_SETS:
             db.execute(

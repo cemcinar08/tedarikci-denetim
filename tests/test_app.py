@@ -254,3 +254,125 @@ def test_question_set_unique_names(client):
     assert c1["name"] == "Depo (kopya)" and c2["name"] == "Depo (kopya 2)"
     assert client.put(f"/api/question-sets/{c1['id']}", json=body).status_code == 409
     assert client.put(f"/api/question-sets/{a.json()['id']}", json=body).status_code == 200
+
+
+# ------------------------------------------------------------------ bildirimler
+def test_webhook_signature():
+    from app import notify
+    sig = notify.sign("gizli", "1700000000", b'{"a":1}')
+    import hashlib, hmac
+    assert sig == "sha256=" + hmac.new(b"gizli", b'1700000000.{"a":1}', hashlib.sha256).hexdigest()
+
+
+def test_notification_flow(client, monkeypatch):
+    from app import notify
+    sent_mail, sent_hooks = [], []
+    monkeypatch.setattr(notify, "send_email", lambda s, to, subj, text, html: sent_mail.append((to, subj, text, html)))
+
+    async def fake_hook(url, secret, payload):
+        sent_hooks.append((url, secret, payload))
+        if "bozuk" in url:
+            raise RuntimeError("HTTP 500: hata")
+        return 200
+    monkeypatch.setattr(notify, "send_webhook", fake_hook)
+
+    # Geçersiz alanlar reddedilir
+    assert client.post("/api/suppliers", json={"name": "X", "notify_emails": "yanlis"}).status_code == 422
+    assert client.post("/api/suppliers", json={"name": "X", "webhook_url": "ftp://x"}).status_code == 422
+
+    sid = client.post("/api/suppliers", json={
+        "name": "Tedarikçi <b>A.Ş.</b>", "notify_emails": "a@t.com; b@t.com",
+        "webhook_url": "https://t.com/hook", "webhook_secret": "s3cr3t"}).json()["id"]
+    f1 = client.post("/api/findings", json={"supplier_id": sid, "title": "MFA yok <script>", "severity": "yüksek"}).json()
+    f2 = client.post("/api/findings", json={"supplier_id": sid, "title": "Yedek testi yok", "severity": "orta"}).json()
+    other = client.post("/api/suppliers", json={"name": "Başka"}).json()["id"]
+    f3 = client.post("/api/findings", json={"supplier_id": other, "title": "x"}).json()
+
+    # SMTP yokken e-posta başarısız olarak kaydedilir, webhook gider
+    r = client.post("/api/notifications", json={"supplier_id": sid, "finding_ids": [f1["id"], f2["id"]],
+                                                "channels": ["email", "webhook"], "note": "15 gün içinde dönün"}).json()
+    by = {n["channel"]: n for n in r}
+    assert by["email"]["status"] == "başarısız" and "SMTP" in by["email"]["error"]
+    assert by["webhook"]["status"] == "gönderildi" and by["webhook"]["response_code"] == 200
+    url, secret, payload = sent_hooks[-1]
+    assert secret == "s3cr3t" and payload["event"] == "finding.notification" and len(payload["findings"]) == 2
+    assert payload["findings"][0]["severity"] == "yüksek" and payload["message"] == "15 gün içinde dönün"
+    assert payload["response"]["api"].endswith(by["webhook"]["token"])
+
+    # Başka tedarikçinin bulgusu eklenemez
+    assert client.post("/api/notifications", json={"supplier_id": sid, "finding_ids": [f3["id"]], "channels": ["webhook"]}).status_code == 422
+
+    # SMTP ayarla -> e-posta tekrar denenir
+    client.put("/api/settings", json={"org_name": "ABC", "smtp_host": "smtp.x.com", "smtp_from": "d@abc.com", "smtp_password": "p"})
+    st = client.get("/api/settings").json()
+    assert st["smtp_ready"] and st["smtp_password_set"] and "smtp_password" not in st
+    rr = client.post(f"/api/notifications/{by['email']['id']}/retry").json()
+    assert rr["status"] == "gönderildi" and sent_mail[-1][0] == ["a@t.com", "b@t.com"]
+    to, subj, text, html_body = sent_mail[-1]
+    assert subj.startswith("[ABC]") and "&lt;script&gt;" in html_body and "<script>" not in html_body
+    assert client.post(f"/api/notifications/{by['email']['id']}/retry").status_code == 409
+
+    f = client.get(f"/api/findings?supplier_id={sid}").json()
+    assert all(x["supplier_status"] == "bildirildi" and x["notified_at"] for x in f)
+
+    # Tedarikçi yanıtı (API)
+    tok = by["webhook"]["token"]
+    v = client.get(f"/api/public/respond/{tok}").json()
+    assert v["supplier"] == "Tedarikçi <b>A.Ş.</b>" and len(v["findings"]) == 2 and "id" in v["findings"][0]
+    assert client.get("/api/public/respond/yanlis-token-1234567890abc").status_code == 404
+    assert client.post(f"/api/public/respond/{tok}", json={"finding_id": f3["id"], "status": "okundu"}).status_code == 422
+    assert client.post(f"/api/public/respond/{tok}", json={"status": "bilinmiyor"}).status_code == 422
+    r = client.post(f"/api/public/respond/{tok}", json={"finding_id": f1["id"], "status": "aksiyon planlandı",
+                                                         "comment": "MFA devreye alınacak", "planned_date": "2026-12-20", "responder": "Ali"})
+    assert r.status_code == 201
+    client.post(f"/api/public/respond/{tok}", json={"status": "okundu"})  # tüm bulgulara
+    f = {x["id"]: x for x in client.get(f"/api/findings?supplier_id={sid}").json()}
+    assert f[f1["id"]]["supplier_status"] == "okundu" and f[f1["id"]]["supplier_due_date"] == "2026-12-20"
+    assert f[f1["id"]]["status"] == "devam ediyor" and f[f2["id"]]["status"] == "açık"
+
+    n = client.get(f"/api/notifications?supplier_id={sid}").json()
+    hook = next(x for x in n if x["channel"] == "webhook")
+    assert len(hook["responses"]) == 3 and hook["viewed_at"]
+    assert client.get(f"/yanit/{tok}").status_code == 200
+
+    # Önizleme ve manuel kanal
+    pv = client.post("/api/notifications/preview", json={"supplier_id": sid, "finding_ids": [f2["id"]]}).json()
+    assert pv["base_url"] == "http://testserver" and "Yedek testi yok" in pv["text"]
+    client.put("/api/settings", json={"public_base_url": "https://denetim.abc.com/"})
+    pv = client.post("/api/notifications/preview", json={"supplier_id": sid, "finding_ids": [f2["id"]]}).json()
+    assert pv["base_url"] == "https://denetim.abc.com" and not pv["base_is_local"]
+    assert "https://denetim.abc.com/yanit/" in pv["text"]
+    assert client.put("/api/settings", json={"public_base_url": "denetim.abc.com"}).status_code == 422
+    m = client.post("/api/notifications", json={"supplier_id": sid, "finding_ids": [f2["id"]], "channels": ["manuel"]}).json()[0]
+    assert m["status"] == "manuel" and "mailto_body" in m and m["token"] in m["mailto_body"]
+
+    # Bozuk webhook -> başarısız + hata kaydı
+    client.put(f"/api/suppliers/{sid}", json={"name": "T", "webhook_url": "https://t.com/bozuk"})
+    b = client.post("/api/notifications", json={"supplier_id": sid, "finding_ids": [f2["id"]], "channels": ["webhook"]}).json()[0]
+    assert b["status"] == "başarısız" and b["response_code"] == 500
+
+
+def test_auto_notify_on_scan(client, monkeypatch):
+    from app import notify
+    hooks = []
+
+    async def fake_hook(url, secret, payload):
+        hooks.append(payload); return 204
+    monkeypatch.setattr(notify, "send_webhook", fake_hook)
+
+    async def fake_scan(d):
+        return fake_result(d, "fail")
+    monkeypatch.setattr("app.main.scan_domain", fake_scan)
+
+    sid = client.post("/api/suppliers", json={"name": "Oto", "domains": ["ornek.com"], "webhook_url": "https://t.com/h"}).json()["id"]
+    r = client.post(f"/api/suppliers/{sid}/scan").json()
+    assert r[0]["findings_created"] == 1 and r[0]["notified"] == [] and not hooks  # otomatik kapalı
+
+    client.put(f"/api/suppliers/{sid}", json={"name": "Oto", "domains": ["ornek.com"], "webhook_url": "https://t.com/h", "auto_notify": True})
+    async def fake_scan2(d):
+        res = fake_result(d, "fail"); res["checks"][0]["status"] = "fail"; res["checks"][0]["title"] = "Yeni sorun"; return res
+    monkeypatch.setattr("app.main.scan_domain", fake_scan2)
+    r = client.post(f"/api/suppliers/{sid}/scan").json()
+    assert r[0]["findings_created"] == 1 and r[0]["notified"] == ["webhook"]
+    assert hooks[-1]["scan"]["domain"] == "ornek.com" and len(hooks[-1]["findings"]) == 1
+    assert hooks[-1]["event"] == "finding.notification"

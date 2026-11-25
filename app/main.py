@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
+from . import notify
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
@@ -52,6 +54,31 @@ class SupplierIn(BaseModel):
     criticality: Literal["düşük", "orta", "yüksek"] = "orta"
     status: Literal["aktif", "askıda", "pasif"] = "aktif"
     notes: Optional[str] = None
+    # Bildirim ayarları
+    notify_emails: Optional[str] = None     # virgülle ayrılmış
+    webhook_url: Optional[str] = None
+    webhook_secret: Optional[str] = None
+    auto_notify: bool = False
+
+    @field_validator("notify_emails")
+    @classmethod
+    def _emails(cls, v):
+        if not v or not v.strip():
+            return None
+        try:
+            return ", ".join(notify.parse_emails(v))
+        except HTTPException as e:
+            raise ValueError(e.detail)
+
+    @field_validator("webhook_url")
+    @classmethod
+    def _webhook(cls, v):
+        if not v or not v.strip():
+            return None
+        v = v.strip()
+        if not re.match(r"^https?://[^\s/]+", v):
+            raise ValueError("Webhook adresi http:// veya https:// ile başlamalı")
+        return v
 
     @field_validator("domains")
     @classmethod
@@ -448,9 +475,11 @@ def delete_audit(aid: int):
 
 
 @app.post("/api/audits/{aid}/generate-findings")
-def generate_audit_findings(aid: int):
-    """'Uygun değil' ve 'kısmen' cevaplarından bulgu (DÖF) oluşturur. Mevcut olanları tekrar oluşturmaz."""
+async def generate_audit_findings(aid: int):
+    """'Uygun değil' ve 'kısmen' cevaplarından bulgu (DÖF) oluşturur. Mevcut olanları tekrar oluşturmaz.
+    Tedarikçide otomatik bildirim açıksa yeni bulgular tedarikçiye bildirilir."""
     created = 0
+    new_ids: list[int] = []
     with get_db() as db:
         a = get_audit(aid, db)
         existing = {f["title"] for f in a["findings"]}
@@ -465,13 +494,15 @@ def generate_audit_findings(aid: int):
             title = f"[{sec_title[qid]}] {q_text[qid]}"
             if title in existing:
                 continue
-            db.execute(
+            new_ids.append(db.execute(
                 "INSERT INTO findings (supplier_id, audit_id, source, title, severity, description, due_date) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (a["supplier_id"], aid, "denetim", title, sev,
-                 f"Denetim cevabı: {v['answer']}" + (f"\nNot: {v['note']}" if v.get("note") else ""), due_for(sev)))
+                 f"Denetim cevabı: {v['answer']}" + (f"\nNot: {v['note']}" if v.get("note") else ""), due_for(sev))).lastrowid)
             created += 1
-    return {"created": created}
+        supplier_id = a["supplier_id"]
+    sent = await notify.auto_notify(supplier_id, new_ids)
+    return {"created": created, "notified": [n["channel"] for n in sent if n["status"] == "gönderildi"]}
 
 
 # ============================================================ Bulgular / Aksiyonlar
@@ -532,6 +563,7 @@ def _store_scan(db, sid: int, result: dict, create_findings: bool) -> dict:
          json.dumps(result, ensure_ascii=False)))
     scan_id = cur.lastrowid
     created = closed = 0
+    new_ids: list[int] = []
     if create_findings:
         prefix = f"[{result['domain']}] "
         open_intel = {f["title"]: f for f in rows(db.execute(
@@ -541,11 +573,11 @@ def _store_scan(db, sid: int, result: dict, create_findings: bool) -> dict:
         for c in result["checks"]:
             title = prefix + c["title"]
             if c["status"] == "fail" and title not in open_intel:
-                db.execute(
+                new_ids.append(db.execute(
                     "INSERT INTO findings (supplier_id, scan_id, source, title, severity, description, action, due_date) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (sid, scan_id, "istihbarat", title, c["severity"], c["detail"], c["recommendation"],
-                     due_for(c["severity"])))
+                     due_for(c["severity"]))).lastrowid)
                 created += 1
         # Önceki taramada başarısız olup artık geçen kontroller -> otomatik kapat
         for title, f in open_intel.items():
@@ -555,7 +587,7 @@ def _store_scan(db, sid: int, result: dict, create_findings: bool) -> dict:
                     (dt.datetime.now().isoformat(timespec="seconds"),
                      f"\n[Otomatik] {result['scanned_at'][:10]} taramasında giderildiği doğrulandı.", f["id"]))
                 closed += 1
-    return {"scan_id": scan_id, "findings_created": created, "findings_closed": closed}
+    return {"scan_id": scan_id, "findings_created": created, "findings_closed": closed, "new_finding_ids": new_ids}
 
 
 @app.post("/api/suppliers/{sid}/scan")
@@ -570,6 +602,8 @@ async def scan_supplier(sid: int, create_findings: bool = True, domain: Optional
         result = await scan_domain(d)
         with get_db() as db:
             meta = _store_scan(db, sid, result, create_findings)
+        sent = await notify.auto_notify(sid, meta.pop("new_finding_ids"), meta["scan_id"])
+        meta["notified"] = [n["channel"] for n in sent if n["status"] == "gönderildi"]
         out.append({**meta, "domain": d, "score": result["score"], "grade": result["grade"], "summary": result["summary"]})
     return out
 
@@ -641,7 +675,14 @@ def dashboard():
 
 
 # ============================================================ Statik arayüz
+app.include_router(notify.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/yanit/{token}", include_in_schema=False)
+def response_page(token: str):
+    """Tedarikçinin bildirime yanıt verdiği sayfa (giriş gerektirmez, token ile erişilir)."""
+    return FileResponse(STATIC / "yanit.html", headers={"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"})
 
 
 @app.get("/", include_in_schema=False)

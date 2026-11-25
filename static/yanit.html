@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Bildirim Yanıtı</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    main { max-width: 880px; }
+    .f-card { border-left: 4px solid var(--border); }
+    .f-card.kritik { border-left-color: var(--crit); } .f-card.yüksek { border-left-color: var(--bad); }
+    .f-card.orta { border-left-color: var(--warn); } .f-card.düşük { border-left-color: var(--info); }
+    .resp-form { display: grid; grid-template-columns: 200px 160px 1fr; gap: 8px; margin-top: 12px; align-items: start; }
+    .resp-form textarea { min-height: 38px; grid-column: 1 / -1; }
+    .resp-form .actions { grid-column: 1 / -1; justify-content: flex-end; }
+    .hist { font-size: 12px; color: var(--muted); margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+    @media (max-width: 640px) { .resp-form { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="brand">Tedarikçi<span>Bildirimi</span></div></header>
+  <main id="app"><p class="muted">Yükleniyor…</p></main>
+  <div id="toast" class="toast hidden"></div>
+<script>
+"use strict";
+const token = decodeURIComponent(location.pathname.split("/").pop());
+const api = `/api/public/respond/${encodeURIComponent(token)}`;
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = (d) => (d ? new Date(d.length <= 10 ? d + "T00:00:00" : d).toLocaleDateString("tr-TR") : "—");
+const sevCls = { kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", düşük: "" };
+const stCls = { okundu: "", "aksiyon planlandı": "b-warn", giderildi: "b-ok", itiraz: "b-bad", bildirildi: "" };
+const STATUS_HELP = {
+  okundu: "Bildirimi aldık, inceliyoruz.",
+  "aksiyon planlandı": "Düzeltici faaliyet planlandı (planlanan tarihi girin).",
+  giderildi: "Sorun giderildi (yapılanı açıklayın; müşteri doğrulayacaktır).",
+  itiraz: "Bulguya katılmıyoruz (gerekçeyi açıklayın).",
+};
+function toast(m) { const t = document.getElementById("toast"); t.textContent = m; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 3500); }
+
+function form(fid, statuses) {
+  return `<form class="resp-form" data-fid="${fid ?? ""}">
+    <select name="status" required>${statuses.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select>
+    <input type="date" name="planned_date" title="Planlanan tarih">
+    <input name="responder" placeholder="Yanıtlayan (ad soyad)" maxlength="200">
+    <textarea name="comment" placeholder="${esc(STATUS_HELP[statuses[0]])}" maxlength="5000"></textarea>
+    <div class="actions"><button class="primary">Yanıtı gönder</button></div></form>`;
+}
+
+async function load() {
+  const res = await fetch(api);
+  const $ = document.getElementById("app");
+  if (!res.ok) { $.innerHTML = `<div class="card empty">Bu bağlantı geçersiz veya artık kullanılamıyor.</div>`; return; }
+  const d = await res.json();
+  const hist = (fid) => d.responses.filter((r) => r.finding_id === fid);
+  const histHtml = (list) => list.length ? `<div class="hist">${list.map((r) => `<div>${fmt(r.created_at)} · <span class="badge ${stCls[r.status] || ""}">${esc(r.status)}</span>
+      ${r.planned_date ? `· plan: ${fmt(r.planned_date)}` : ""} ${r.responder ? `· ${esc(r.responder)}` : ""}${r.comment ? `<div>${esc(r.comment)}</div>` : ""}</div>`).join("")}</div>` : "";
+  $.innerHTML = `
+    <div class="card"><div class="muted small">${esc(d.from || "Müşteriniz")} · ${fmt(d.sent_at)}</div>
+      <h1 style="margin-top:4px">${esc(d.subject || "Bildirim")}</h1>
+      <p>Sayın <b>${esc(d.supplier)}</b> yetkilisi, aşağıdaki her konu için durumunuzu seçip gönderebilirsiniz. Yanıtlarınız doğrudan değerlendirme ekibine iletilir.</p>
+      <div class="small muted">${Object.entries(STATUS_HELP).map(([k, v]) => `<b>${esc(k)}</b>: ${esc(v)}`).join(" · ")}</div></div>
+    ${d.scan ? `<div class="card"><h2>Dış güvenlik değerlendirmesi — ${esc(d.scan.domain)}</h2>
+      <div class="muted" style="margin-bottom:8px">Not: <b>${esc(d.scan.grade || "—")}</b> · Puan: <b>${esc(d.scan.score ?? "—")}</b>/100 · ${fmt(d.scan.scanned_at)}</div>
+      ${d.scan.issues.map((i) => `<div class="check"><div><span class="badge ${i.status === "fail" ? "b-bad" : "b-warn"}">${i.status === "fail" ? "Başarısız" : "Uyarı"}</span></div>
+        <div><b>${esc(i.check)}</b><div class="small">${esc(i.detail)}</div>${i.recommendation ? `<div class="rec">→ ${esc(i.recommendation)}</div>` : ""}</div></div>`).join("") || `<div class="muted">Sorun bulunmadı.</div>`}
+      ${!d.findings.length ? `<h3>Yanıtınız</h3>${form(null, d.statuses)}${histHtml(hist(null))}` : ""}</div>` : ""}
+    ${d.findings.map((f) => `<div class="card f-card ${esc(f.severity)}">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge ${sevCls[f.severity] || ""}">${esc(f.severity)}</span>
+        <b>${esc(f.title)}</b>${f.supplier_status ? ` <span class="badge ${stCls[f.supplier_status] || ""}">Sizin durumunuz: ${esc(f.supplier_status)}</span>` : ""}</div>
+      ${f.description ? `<div class="small muted" style="white-space:pre-wrap;margin-top:6px">${esc(f.description)}</div>` : ""}
+      ${f.action ? `<div class="small" style="margin-top:6px;color:var(--primary)">Beklenen aksiyon: ${esc(f.action)}</div>` : ""}
+      <div class="small" style="margin-top:4px">Termin: <b>${fmt(f.due_date)}</b></div>
+      ${form(f.id, d.statuses)}${histHtml(hist(f.id))}</div>`).join("")}
+    <div class="card small muted">Sistemleriniz üzerinden otomatik yanıt vermek için bu bağlantının API adresine JSON gönderebilirsiniz:<br>
+      <code>POST ${esc(location.origin + api)}</code><br>
+      <code>{"finding_id": ${d.findings[0]?.id ?? "null"}, "status": "aksiyon planlandı", "comment": "...", "planned_date": "YYYY-AA-GG", "responder": "..."}</code></div>`;
+
+  document.querySelectorAll(".resp-form").forEach((f) => {
+    f.status.onchange = () => (f.comment.placeholder = STATUS_HELP[f.status.value] || "");
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries([...new FormData(f)].map(([k, v]) => [k, v || null]));
+      body.finding_id = f.dataset.fid ? +f.dataset.fid : null;
+      if (["giderildi", "itiraz"].includes(body.status) && !body.comment) return toast("Lütfen açıklama yazın.");
+      if (body.status === "aksiyon planlandı" && !body.planned_date) return toast("Lütfen planlanan tarihi girin.");
+      const btn = f.querySelector("button"); btn.disabled = true;
+      const r = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json", "X-TD-Client": "yanit-sayfasi" }, body: JSON.stringify(body) });
+      btn.disabled = false;
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return toast(typeof j.detail === "string" ? j.detail : "Gönderilemedi"); }
+      toast("Yanıtınız iletildi, teşekkürler."); load();
+    };
+  });
+}
+load();
+</script>
+</body>
+</html>

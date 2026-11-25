@@ -1,4 +1,5 @@
 """Örnek veri yükler:  python -m app.seed"""
+import asyncio
 import datetime as dt
 
 from .db import get_db, init_db
@@ -37,7 +38,7 @@ def main():
         qids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
         answers = {q: m.AnswerIn(answer=PATTERNS[i][(j + i) % len(PATTERNS[i])]) for j, q in enumerate(qids)}
         m.update_audit(a["id"], m.AuditUpdate(status="tamamlandı", answers=answers))
-        m.generate_audit_findings(a["id"])
+        asyncio.run(m.generate_audit_findings(a["id"]))
         with get_db() as db:  # örnek veri sade kalsın: yalnızca "uygun değil" bulguları
             db.execute("DELETE FROM findings WHERE audit_id=? AND severity='orta'", (a["id"],))
         with get_db() as db:  # bazı bulgulara sorumlu/termin ver; birini gecikmiş yap

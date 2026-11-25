@@ -25,6 +25,15 @@ Tedarikçi denetimi, bulgu/DÖF takibi ve **dış istihbarat** (domain'lerin dı
 
   Not: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, F < 60. Başarısız kontroller bulguya dönüşür; sonraki taramada düzelmişse bulgu **otomatik kapanır**.
   Ölçülemeyen kontroller (ağ engeli vb.) puanlamaya katılmaz.
+- **Tedarikçiye bildirim**: Bulgular (tek tek, seçili ya da tüm açıklar) ve dış istihbarat tarama sonuçları tedarikçiye gönderilir.
+  - **E-posta** (Ayarlar → SMTP), **webhook** (tedarikçinin kendi sistemine imzalı JSON) veya **kendi e-posta programınızla** (mailto)
+  - Her bildirimde tedarikçiye özel **yanıt linki** (`/yanit/{token}`) ve **yanıt API'si** (`POST /api/public/respond/{token}`):
+    tedarikçi her bulgu için *okundu / aksiyon planlandı / giderildi / itiraz* yanıtı, açıklama ve planlanan tarih iletir;
+    yanıt bulguya işlenir ("aksiyon planlandı"/"giderildi" → bulgu *devam ediyor*). Bulguyu kapatmak her zaman sizin kararınızdır.
+  - Webhook imzası: `X-TD-Signature: sha256=HMAC-SHA256(anahtar, X-TD-Timestamp + "." + gövde)`; başlıklar `X-TD-Event`, `X-TD-Delivery`
+  - Gönderim geçmişi, başarısız gönderimi tekrar deneme, webhook testi, isteğe bağlı **otomatik bildirim** (yeni bulgu oluştuğunda)
+  - Not: Tedarikçinin yanıt linkini açabilmesi için uygulamanın erişilebilir bir sunucuda çalışması ve Ayarlar'da
+    "genel adres"in girilmesi gerekir. Yalnızca kendi bilgisayarınızda çalışırken e-posta/webhook gönderilir ama link dışarıdan açılmaz.
 - **Pano**: risk dağılımı, önem dağılımı, siber notlar, risk sıralaması, geciken aksiyonlar, planlı denetimler, 12 aydır denetlenmeyenler
 - **Rapor**: tedarikçi bazında yazdırılabilir / PDF rapor
 - **Genel puan** = denetim × %60 + siber × %40. Risk: kritik açık bulgu, genel puan < 50 veya yüksek kritik tedarikçide < 70 → *yüksek*.

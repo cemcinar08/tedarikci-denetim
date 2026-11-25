@@ -3,6 +3,7 @@
 
 const $app = document.getElementById("app");
 let META = null;
+let SETTINGS = null;
 
 // ---------------------------------------------------------------- yardımcılar
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -87,6 +88,7 @@ const routes = [
   [/^#\/rapor\/(\d+)$/, viewReport],
   [/^#\/soru-setleri$/, viewQuestionSets],
   [/^#\/soru-seti\/(\d+|yeni)$/, viewQuestionSet],
+  [/^#\/ayarlar$/, viewSettings],
 ];
 
 async function router() {
@@ -186,7 +188,7 @@ async function viewSuppliers() {
   draw();
 }
 
-function supplierForm(s = {}) {
+function supplierForm(s = {}, focus = null) {
   const sel = (name, opts, val) => `<select name="${name}">${opts.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
   modal(`<h2>${s.id ? "Tedarikçiyi düzenle" : "Yeni tedarikçi"}</h2>
   <form id="f">
@@ -201,11 +203,24 @@ function supplierForm(s = {}) {
     <div style="margin-bottom:12px"><label>Domain'ler (dış istihbarat için; virgül veya satır ile ayırın)</label>
       <textarea name="domains" placeholder="ornekfirma.com.tr&#10;ornekfirma.com">${esc((s.domains || []).join("\n"))}</textarea></div>
     <div style="margin-bottom:12px"><label>Notlar</label><textarea name="notes">${esc(s.notes || "")}</textarea></div>
+    <h3 id="bildirimBas">Bildirim ayarları</h3>
+    <div class="small muted" style="margin-bottom:8px">Bulgular ve dış istihbarat sonuçları bu kanallardan tedarikçiye iletilir.</div>
+    <div style="margin-bottom:12px"><label>Bildirim e-postaları (virgülle ayırın)</label><input name="notify_emails" placeholder="kalite@tedarikci.com, bilgiguvenligi@tedarikci.com" value="${esc(s.notify_emails || "")}"></div>
+    <div class="row"><div><label>Webhook adresi (tedarikçinin sistemi)</label><input name="webhook_url" placeholder="https://tedarikci.com/api/musteri-bildirim" value="${esc(s.webhook_url || "")}"></div>
+      <div><label>Webhook imza anahtarı</label><div style="display:flex;gap:6px"><input name="webhook_secret" value="${esc(s.webhook_secret || "")}" autocomplete="off"><button type="button" id="gen" title="Rastgele anahtar üret">Üret</button></div></div></div>
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px;color:var(--text);font-weight:400"><input type="checkbox" name="auto_notify" style="width:auto" ${s.auto_notify ? "checked" : ""}>
+      Yeni bulgular oluştuğunda (denetim veya istihbarat taraması) tedarikçiye otomatik bildir</label>
     <div class="actions" style="justify-content:flex-end"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div>
   </form>`, (box) => {
+    box.querySelector("#gen").onclick = () => {
+      const a = new Uint8Array(24); crypto.getRandomValues(a);
+      box.querySelector("[name=webhook_secret]").value = [...a].map((x) => x.toString(16).padStart(2, "0")).join("");
+    };
+    if (focus === "bildirim") setTimeout(() => { box.querySelector("#bildirimBas").scrollIntoView(); box.querySelector("[name=notify_emails]").focus(); }, 50);
     box.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const d = formData(e.target);
+      d.auto_notify = e.target.auto_notify.checked;
       d.domains = (d.domains || "").split(/[\s,;]+/).filter(Boolean);
       try {
         const r = await api(s.id ? `/api/suppliers/${s.id}` : "/api/suppliers", { method: s.id ? "PUT" : "POST", body: d });
@@ -219,7 +234,7 @@ function supplierForm(s = {}) {
 async function viewSupplier(id, tab = "ozet") {
   const s = await api(`/api/suppliers/${id}`);
   const sm = s.summary;
-  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["istihbarat", "Dış İstihbarat"]];
+  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]];
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
     <h1>${esc(s.name)}</h1><div class="muted">${esc([s.category, s.country].filter(Boolean).join(" · ") || "—")} · Kritiklik: <b>${esc(s.criticality)}</b> · ${statusBadge(s.status)}</div></div>
@@ -256,10 +271,18 @@ async function viewSupplier(id, tab = "ozet") {
   } else if (tab === "denetimler") {
     T.innerHTML = `<div class="card">${auditsTable(s.audits)}</div>`;
   } else if (tab === "bulgular") {
-    T.innerHTML = `<div class="card"><div class="actions" style="margin-bottom:12px"><button id="nf">+ Manuel bulgu ekle</button></div>
+    T.innerHTML = `<div class="card"><div class="actions" style="margin-bottom:12px"><button id="nf">+ Manuel bulgu ekle</button>
+      <button id="nsel">Seçilenleri bildir</button><button id="nall" ${sm.open_findings ? "" : "disabled"}>Tüm açık bulguları bildir (${sm.open_findings})</button></div>
       <div id="ft"></div></div>`;
-    document.getElementById("ft").innerHTML = findingsTable(s.findings);
-    bindFindingActions(T);
+    document.getElementById("ft").innerHTML = findingsTable(s.findings, { selectable: true });
+    bindFindingActions(T, s.findings);
+    document.getElementById("nsel").onclick = () => {
+      const sel = selectedFindings(T);
+      if (!sel.length) return toast("Önce tablodan bulgu seçin.");
+      notifyModal({ supplier_id: s.id, finding_ids: sel.map((x) => x.id) });
+    };
+    document.getElementById("nall").onclick = () =>
+      notifyModal({ supplier_id: s.id, finding_ids: s.findings.filter((f) => f.status !== "kapandı").map((f) => f.id) });
     document.getElementById("nf").onclick = () => findingForm({ supplier_id: s.id });
   } else if (tab === "istihbarat") {
     T.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Domain güvenlik değerlendirmesi</h2>
@@ -270,20 +293,184 @@ async function viewSupplier(id, tab = "ozet") {
       ${s.scans.length ? `<table><thead><tr><th>Domain</th><th>Not</th><th>Puan</th><th>Özet</th><th>Tarih</th><th></th></tr></thead><tbody>
         ${s.scans.map((x) => { const su = x.result.summary; return `<tr><td><b>${esc(x.domain)}</b></td><td>${gradeBox(x.grade)}</td><td style="min-width:140px">${meter(x.score)}</td>
         <td class="small"><span style="color:var(--bad)">${su.fail} başarısız</span> · <span style="color:var(--warn)">${su.warn} uyarı</span> · <span style="color:var(--ok)">${su.pass} geçti</span>${su.error ? ` · ${su.error} ölçülemedi` : ""}</td>
-        <td class="small">${fmtDT(x.scanned_at)}</td><td><a href="#/tarama/${x.id}">Detay →</a></td></tr>`; }).join("")}</tbody></table>` : ""}
+        <td class="small">${fmtDT(x.scanned_at)}</td><td style="white-space:nowrap"><button class="sm" data-nscan="${x.id}">Bildir</button> <a href="#/tarama/${x.id}">Detay →</a></td></tr>`; }).join("")}</tbody></table>` : ""}
       </div>
       ${s.scan_history.length > s.scans.length ? `<div class="card"><h2>Tarama geçmişi</h2><table><tbody>${s.scan_history.map((x) => `<tr><td>${fmtDT(x.scanned_at)}</td><td>${esc(x.domain)}</td><td>${gradeBox(x.grade)}</td><td>${num(x.score)}</td><td><a href="#/tarama/${x.id}">Detay</a></td></tr>`).join("")}</tbody></table></div>` : ""}`;
     const ed2 = document.getElementById("ed2"); if (ed2) ed2.onclick = (e) => { e.preventDefault(); supplierForm(s); };
+    T.querySelectorAll("[data-nscan]").forEach((b) => (b.onclick = () => notifyModal({ supplier_id: s.id, scan_id: +b.dataset.nscan,
+      finding_ids: s.findings.filter((f) => f.source === "istihbarat" && f.status !== "kapandı" && f.title.startsWith(`[${s.scans.find((x) => x.id == b.dataset.nscan).domain}]`)).map((f) => f.id) })));
     document.getElementById("scan").onclick = async (e) => {
       const b = e.target; b.disabled = true; b.innerHTML = `<span class="spinner"></span> Taranıyor…`;
       try {
         const r = await api(`/api/suppliers/${s.id}/scan?create_findings=${document.getElementById("cf").checked}`, { method: "POST" });
         const c = r.reduce((a, x) => a + x.findings_created, 0), k = r.reduce((a, x) => a + x.findings_closed, 0);
-        toast(`Tarama tamamlandı. ${c} yeni bulgu, ${k} bulgu otomatik kapatıldı.`);
+        const nt = r.flatMap((x) => x.notified || []);
+        toast(`Tarama tamamlandı. ${c} yeni bulgu, ${k} bulgu otomatik kapatıldı.${nt.length ? " Tedarikçiye otomatik bildirildi (" + [...new Set(nt)].join(", ") + ")." : ""}`);
         router();
       } catch (err) { toast(err.message); b.disabled = false; b.textContent = "Tüm domain'leri tara"; }
     };
+  } else if (tab === "bildirimler") {
+    const list = await api(`/api/notifications?supplier_id=${s.id}`);
+    SETTINGS = SETTINGS || (await api("/api/settings").catch(() => null));
+    T.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Bildirim ayarları</h2>
+        <table class="small"><tbody>
+        <tr><th>E-posta alıcıları</th><td>${esc(s.notify_emails || "—")}</td></tr>
+        <tr><th>Webhook</th><td>${esc(s.webhook_url || "—")}${s.webhook_url ? (s.webhook_secret ? ` <span class="badge b-ok">imzalı</span>` : ` <span class="badge b-warn">imzasız</span>`) : ""}</td></tr>
+        <tr><th>Otomatik bildirim</th><td>${s.auto_notify ? `<span class="badge b-ok">açık</span> — yeni denetim/istihbarat bulguları otomatik gönderilir` : "kapalı"}</td></tr></tbody></table></div>
+        <div class="actions"><button id="ens">Bildirim ayarlarını düzenle</button>${s.webhook_url ? `<button id="wht">Webhook'u test et</button>` : ""}</div></div></div>
+      <div class="card"><h2>Gönderilen bildirimler</h2>${notificationsTable(list)}</div>`;
+    document.getElementById("ens").onclick = () => supplierForm(s, "bildirim");
+    const wht = document.getElementById("wht");
+    if (wht) wht.onclick = async () => {
+      wht.disabled = true;
+      try { const r = await api(`/api/suppliers/${s.id}/webhook-test`, { method: "POST" }); toast(`Webhook çalışıyor (HTTP ${r.status_code}).`); }
+      catch (e) { toast(e.message, 6000); }
+      wht.disabled = false;
+    };
+    bindNotificationActions(T);
   }
+}
+
+// ================================================================ BİLDİRİMLER
+const notifStatus = (n) => `<span class="badge ${{ gönderildi: "b-ok", başarısız: "b-bad", manuel: "", beklemede: "b-warn" }[n.status] ?? ""}">${esc(n.status)}</span>`;
+const chLabel = { email: "E-posta", webhook: "Webhook", manuel: "Manuel e-posta" };
+
+function notificationsTable(list) {
+  if (!list.length) return `<div class="empty">Henüz bildirim gönderilmedi.</div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Tarih</th><th>Kanal</th><th>Konu / alıcı</th><th>Durum</th><th>Tedarikçi yanıtları</th><th></th></tr></thead><tbody>
+  ${list.map((n) => `<tr><td class="small">${fmtDT(n.sent_at || n.created_at)}${n.auto ? `<div><span class="badge">otomatik</span></div>` : ""}</td>
+    <td>${esc(chLabel[n.channel] || n.channel)}</td>
+    <td><b>${esc(n.subject || "")}</b><div class="small muted" style="word-break:break-all">${esc(n.target)}</div>
+      <div class="small muted">${n.finding_ids.length} bulgu${n.scan_id ? " + tarama" : ""}${n.viewed_at ? ` · <span style="color:var(--ok)">yanıt sayfası açıldı ${fmtDT(n.viewed_at)}</span>` : ""}</div></td>
+    <td>${notifStatus(n)}${n.response_code ? `<div class="small muted">HTTP ${n.response_code}</div>` : ""}${n.error ? `<div class="small" style="color:var(--bad);max-width:260px">${esc(n.error)}</div>` : ""}</td>
+    <td class="small">${n.responses.length ? n.responses.slice(0, 4).map((r) => `<div style="margin-bottom:4px"><span class="badge">${esc(r.status)}</span> ${r.finding_title ? esc(r.finding_title.slice(0, 60)) : ""}
+      ${r.comment ? `<div class="muted">${esc(r.comment.slice(0, 140))}</div>` : ""}<div class="muted">${fmtDT(r.created_at)} · ${esc(r.via)}${r.responder ? " · " + esc(r.responder) : ""}</div></div>`).join("") + (n.responses.length > 4 ? `<div class="muted">+${n.responses.length - 4} yanıt</div>` : "") : `<span class="muted">—</span>`}</td>
+    <td style="white-space:nowrap">${n.status === "başarısız" ? `<button class="sm" data-retry="${n.id}">Tekrar dene</button> ` : ""}<button class="sm" data-link="${esc(n.token)}">Yanıt linki</button></td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function bindNotificationActions(root) {
+  root.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { const n = await api(`/api/notifications/${b.dataset.retry}/retry`, { method: "POST" }); toast(n.status === "gönderildi" ? "Gönderildi" : "Yine başarısız: " + (n.error || ""), 6000); router(); }
+    catch (e) { toast(e.message, 6000); b.disabled = false; }
+  }));
+  root.querySelectorAll("[data-link]").forEach((b) => (b.onclick = async () => {
+    const url = `${(SETTINGS?.public_base_url || location.origin).replace(/\/$/, "")}/yanit/${b.dataset.link}`;
+    try { await navigator.clipboard.writeText(url); toast("Yanıt linki kopyalandı"); } catch { prompt("Yanıt linki:", url); }
+  }));
+}
+
+
+async function notifyModal({ supplier_id, finding_ids = [], scan_id = null }) {
+  const pv = async (note) => api("/api/notifications/preview", { method: "POST", body: { supplier_id, finding_ids, scan_id, note } });
+  let p;
+  try { p = await pv(null); } catch (e) { return toast(e.message); }
+  SETTINGS = SETTINGS || (await api("/api/settings").catch(() => null));
+  const emailOk = p.recipients.email && p.smtp_ready;
+  const emailHint = !p.recipients.email ? "Tedarikçide bildirim e-postası tanımlı değil" : !p.smtp_ready ? "SMTP ayarları yapılmamış (Ayarlar)" : esc(p.recipients.email);
+  modal(`<h2>Tedarikçiye bildir</h2>
+    <div class="muted" style="margin-bottom:12px"><b>${esc(p.payload.supplier.name)}</b> · ${finding_ids.length} bulgu${scan_id ? ` · ${esc(p.payload.scan.domain)} tarama sonucu (not ${esc(p.payload.scan.grade || "—")})` : ""}</div>
+    ${p.base_is_local ? `<div class="card" style="background:var(--warn-bg);color:var(--warn);border-color:transparent">
+      <b>Uyarı:</b> Yanıt linkleri <code>${esc(p.base_url)}</code> adresini gösteriyor; bu adres yalnızca sizin bilgisayarınızda çalışır, tedarikçi açamaz.
+      Tedarikçinin linke veya API'ye ulaşabilmesi için uygulamayı erişilebilir bir sunucuda çalıştırıp <a href="#/ayarlar" onclick="closeModal()">Ayarlar</a>'dan genel adresi girin. E-posta ve webhook yine de gönderilir.</div>` : ""}
+    <label>Kanallar</label>
+    <div class="set-grid" style="margin-bottom:12px">
+      <label class="set-card"><input type="checkbox" name="ch" value="email" ${emailOk ? "checked" : "disabled"}><div><b>E-posta</b><div class="small muted" style="word-break:break-all">${emailHint}</div></div></label>
+      <label class="set-card"><input type="checkbox" name="ch" value="webhook" ${p.recipients.webhook ? "checked" : "disabled"}><div><b>Webhook (tedarikçi sistemi)</b><div class="small muted" style="word-break:break-all">${p.recipients.webhook ? esc(p.recipients.webhook) + (p.webhook_signed ? " · imzalı" : " · imzasız") : "Tedarikçide webhook adresi tanımlı değil"}</div></div></label>
+    </div>
+    ${!emailOk && !p.recipients.webhook ? `<div class="small muted" style="margin:-4px 0 12px">Tedarikçinin bildirim e-postasını veya webhook adresini <a href="#" id="editSup">tedarikçi ayarlarından</a> ekleyin, ya da aşağıdan kendi e-posta programınızla gönderin.</div>` : ""}
+    <label>Ek mesaj (isteğe bağlı)</label><textarea id="note" placeholder="ör. Lütfen 15 gün içinde aksiyon planınızı iletin."></textarea>
+    <div class="tabs" style="margin-top:12px"><button type="button" class="active" data-pv="mail">E-posta önizleme</button><button type="button" data-pv="json">Webhook JSON</button></div>
+    <div id="pvbox"></div>
+    <div class="actions" style="justify-content:space-between;margin-top:12px">
+      <button type="button" id="manual" title="Kendi e-posta programınız açılır; bildirim kaydedilir ve yanıt linki oluşturulur">Kendi e-posta programımla gönder</button>
+      <div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary" id="send">Gönder</button></div></div>`, (box) => {
+    box.style.maxWidth = "820px";
+    let mode = "mail";
+    const draw = () => {
+      box.querySelector("#pvbox").innerHTML = mode === "mail"
+        ? `<div class="small" style="margin-bottom:6px"><b>Konu:</b> ${esc(p.subject)}</div><iframe sandbox="" style="width:100%;height:340px;border:1px solid var(--border);border-radius:6px;background:#fff" srcdoc="${esc(p.html)}"></iframe>`
+        : `<pre style="max-height:340px;overflow:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:12px">${esc(JSON.stringify(p.payload, null, 2))}</pre>
+           <div class="small muted">Başlıklar: <code>X-TD-Event</code>, <code>X-TD-Delivery</code>, <code>X-TD-Timestamp</code>${p.webhook_signed ? `, <code>X-TD-Signature: sha256=HMAC(secret, timestamp + "." + gövde)</code>` : ""}</div>`;
+    };
+    draw();
+    box.querySelectorAll("[data-pv]").forEach((b) => (b.onclick = () => {
+      mode = b.dataset.pv; box.querySelectorAll("[data-pv]").forEach((x) => x.classList.toggle("active", x === b)); draw();
+    }));
+    let t;
+    box.querySelector("#note").oninput = (e) => { clearTimeout(t); t = setTimeout(async () => { p = { ...p, ...(await pv(e.target.value || null)) }; draw(); }, 400); };
+    const es = box.querySelector("#editSup");
+    if (es) es.onclick = async (e) => { e.preventDefault(); const sup = await api(`/api/suppliers/${supplier_id}`); supplierForm(sup, "bildirim"); };
+    const note = () => box.querySelector("#note").value.trim() || null;
+    box.querySelector("#send").onclick = async (e) => {
+      const channels = [...box.querySelectorAll("input[name=ch]:checked")].map((c) => c.value);
+      if (!channels.length) return toast("Gönderilecek kanal yok. Tedarikçi ayarlarını tamamlayın veya kendi e-posta programınızla gönderin.", 6000);
+      e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> Gönderiliyor…`;
+      try {
+        const r = await api("/api/notifications", { method: "POST", body: { supplier_id, finding_ids, scan_id, channels, note: note() } });
+        const ok = r.filter((n) => n.status === "gönderildi").map((n) => chLabel[n.channel]);
+        const bad = r.filter((n) => n.status === "başarısız");
+        closeModal();
+        toast(ok.length ? `Gönderildi: ${ok.join(", ")}${bad.length ? ` · Başarısız: ${bad.map((n) => chLabel[n.channel] + " (" + n.error + ")").join(", ")}` : ""}`
+          : `Gönderilemedi: ${bad.map((n) => chLabel[n.channel] + " — " + n.error).join("; ")}`, 7000);
+        router();
+      } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Gönder"; }
+    };
+    box.querySelector("#manual").onclick = async () => {
+      try {
+        const [n] = await api("/api/notifications", { method: "POST", body: { supplier_id, finding_ids, scan_id, channels: ["manuel"], note: note() } });
+        const to = p.recipients.email || "";
+        location.href = `mailto:${encodeURIComponent(to).replace(/%2C/g, ",").replace(/%40/g, "@")}?subject=${encodeURIComponent(n.subject)}&body=${encodeURIComponent(n.mailto_body.slice(0, 1800))}`;
+        closeModal(); toast("E-posta programınız açılıyor. Bildirim kaydedildi."); setTimeout(router, 800);
+      } catch (err) { toast(err.message); }
+    };
+  });
+}
+
+// ================================================================ AYARLAR
+async function viewSettings() {
+  const st = (SETTINGS = await api("/api/settings"));
+  const f = (k, label, attrs = "") => `<div><label>${label}</label><input name="${k}" value="${esc(st[k] || "")}" ${attrs}></div>`;
+  $app.innerHTML = `<div class="page-head"><div><h1>Ayarlar</h1><div class="muted">Tedarikçi bildirimleri için genel ayarlar</div></div></div>
+  <form id="sf">
+  <div class="card"><h2>Kurum</h2><div class="row">
+    ${f("org_name", "Kurum adı (e-postalarda gönderen olarak görünür)", 'placeholder="ör. ABC Sanayi A.Ş."')}
+    ${f("public_base_url", "Uygulamanın genel adresi (tedarikçinin yanıt linki için)", 'placeholder="ör. https://denetim.sirketiniz.com"')}</div>
+    <div class="small muted">Tedarikçinin yanıt sayfasını ve yanıt API'sini kullanabilmesi için uygulama internetten (veya tedarikçinin ağından) erişilebilir bir sunucuda çalışmalıdır.
+      Uygulama yalnızca kendi bilgisayarınızda çalışıyorsa e-posta ve webhook gönderilir ama tedarikçi yanıt linkini açamaz; yanıtları siz bulgu üzerine işleyebilirsiniz.</div></div>
+  <div class="card"><h2>E-posta (SMTP)</h2>
+    <div class="row">${f("smtp_host", "SMTP sunucusu", 'placeholder="ör. smtp.office365.com, smtp.gmail.com"')}${f("smtp_port", "Port", 'placeholder="587"')}
+      <div><label>Güvenlik</label><select name="smtp_security">${[["starttls", "STARTTLS (587)"], ["ssl", "SSL/TLS (465)"], ["none", "Yok (önerilmez)"]].map(([v, l]) => `<option value="${v}" ${st.smtp_security === v ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
+    <div class="row">${f("smtp_user", "Kullanıcı adı", 'autocomplete="off"')}
+      <div><label>Parola ${st.smtp_password_set ? `<span class="badge b-ok">kayıtlı</span>` : ""}</label><input name="smtp_password" type="password" autocomplete="new-password" placeholder="${st.smtp_password_set ? "Değiştirmek için yazın" : ""}"></div></div>
+    <div class="row">${f("smtp_from", "Gönderen adresi", 'placeholder="denetim@sirketiniz.com"')}${f("reply_to", "Yanıt adresi (Reply-To, isteğe bağlı)")}</div>
+    <div class="small muted">Gmail / Microsoft 365 kullanıyorsanız normal parolanız yerine "uygulama parolası" oluşturmanız gerekebilir. Parola bu bilgisayardaki veritabanında saklanır.</div>
+    <div class="actions" style="margin-top:12px;align-items:center"><span>Durum: ${st.smtp_ready ? `<span class="badge b-ok">hazır</span>` : `<span class="badge b-warn">yapılandırılmadı</span>`}</span>
+      <input id="testTo" placeholder="Test alıcısı (e-posta)" style="width:260px"><button type="button" id="test">Test e-postası gönder</button></div></div>
+  <div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
+  <div class="card" style="margin-top:16px"><h2>Tedarikçi sistemleri için entegrasyon bilgisi</h2><div class="small">
+    <p><b>Webhook (bizden tedarikçiye):</b> Her tedarikçi için tanımlanan adrese <code>POST</code> ile JSON gönderilir. Olaylar: <code>finding.notification</code>, <code>intel.notification</code>, <code>test</code>.
+      Başlıklar: <code>X-TD-Event</code>, <code>X-TD-Delivery</code> (tekil id), <code>X-TD-Timestamp</code>, <code>X-TD-Signature</code>.
+      İmza: <code>sha256=</code> + HMAC-SHA256(paylaşılan anahtar, <code>timestamp + "." + ham gövde</code>) (hex). 2xx dışındaki yanıtlar başarısız sayılır ve "Tekrar dene" ile yeniden gönderilebilir.</p>
+    <p><b>Yanıt API'si (tedarikçiden bize):</b> Her bildirimde yer alan <code>response.api</code> adresine:<br>
+      <code>POST /api/public/respond/{token}</code> · JSON: <code>{"finding_id": 12, "status": "okundu | aksiyon planlandı | giderildi | itiraz", "comment": "...", "planned_date": "YYYY-AA-GG", "responder": "..."}</code><br>
+      <code>finding_id</code> verilmezse yanıt bildirimdeki tüm bulgulara uygulanır. <code>GET</code> aynı adreste bildirimin güncel durumunu döner. Token bildirime özeldir; yalnızca o bildirimin bulgularına erişim verir.</p>
+    <p>Tedarikçinin "aksiyon planlandı" veya "giderildi" yanıtı, açık bulguyu "devam ediyor" durumuna alır. Bulguyu kapatmak (doğrulamak) her zaman sizin kararınızdır.</p></div></div>`;
+  document.getElementById("sf").onsubmit = async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(e.target));
+    if (!d.smtp_password) delete d.smtp_password;
+    try { SETTINGS = await api("/api/settings", { method: "PUT", body: d }); toast("Ayarlar kaydedildi"); viewSettings(); }
+    catch (err) { toast(err.message); }
+  };
+  document.getElementById("test").onclick = async (e) => {
+    const to = document.getElementById("testTo").value.trim();
+    if (!to) return toast("Test alıcısını yazın.");
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> Gönderiliyor…`;
+    try { await api("/api/settings/test-email", { method: "POST", body: { to } }); toast("Test e-postası gönderildi."); }
+    catch (err) { toast(err.message, 8000); }
+    e.target.disabled = false; e.target.textContent = "Test e-postası gönder";
+  };
 }
 
 // ================================================================ DENETİMLER
@@ -541,15 +728,17 @@ async function viewAudit(id) {
 }
 
 // ================================================================ BULGULAR
-function findingsTable(list, { compact = false, withSupplier = false } = {}) {
+const supStatusBadge = (f) => (f.supplier_status ? `<span class="badge ${{ okundu: "", bildirildi: "", "aksiyon planlandı": "b-warn", giderildi: "b-ok", itiraz: "b-bad" }[f.supplier_status] ?? ""}" title="${esc([f.supplier_comment, f.supplier_due_date ? "Plan: " + fmtDate(f.supplier_due_date) : ""].filter(Boolean).join(" — "))}">${esc(f.supplier_status)}</span>${f.supplier_due_date ? `<div class="small muted">plan: ${fmtDate(f.supplier_due_date)}</div>` : ""}` : `<span class="muted small">—</span>`);
+
+function findingsTable(list, { compact = false, withSupplier = false, selectable = false } = {}) {
   if (!list.length) return `<div class="empty">Bulgu yok.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Önem</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>Bulgu</th>${compact ? "" : "<th>Kaynak</th><th>Sorumlu</th>"}<th>Termin</th><th>Durum</th>${compact ? "" : "<th></th>"}</tr></thead><tbody>
-  ${list.map((f) => `<tr><td>${sevBadge(f.severity)}</td>${withSupplier ? `<td><a href="#/tedarikci/${f.supplier_id}/bulgular">${esc(f.supplier_name)}</a></td>` : ""}
-    <td><b>${esc(f.title)}</b>${!compact && f.action ? `<div class="small" style="color:var(--primary)">Aksiyon: ${esc(f.action)}</div>` : ""}${!compact && f.description ? `<div class="small muted" style="white-space:pre-wrap">${esc(f.description)}</div>` : ""}</td>
+  return `<div class="table-wrap"><table><thead><tr>${selectable ? `<th><input type="checkbox" class="fsel-all" title="Tümünü seç" style="width:auto"></th>` : ""}<th>Önem</th>${withSupplier ? "<th>Tedarikçi</th>" : ""}<th>Bulgu</th>${compact ? "" : "<th>Kaynak</th><th>Sorumlu</th>"}<th>Termin</th><th>Durum</th>${compact ? "" : "<th>Tedarikçi yanıtı</th><th></th>"}</tr></thead><tbody>
+  ${list.map((f) => `<tr>${selectable ? `<td><input type="checkbox" class="fsel" value="${f.id}" data-sid="${f.supplier_id}" style="width:auto"></td>` : ""}<td>${sevBadge(f.severity)}</td>${withSupplier ? `<td><a href="#/tedarikci/${f.supplier_id}/bulgular">${esc(f.supplier_name)}</a></td>` : ""}
+    <td><b>${esc(f.title)}</b>${!compact && f.action ? `<div class="small" style="color:var(--primary)">Aksiyon: ${esc(f.action)}</div>` : ""}${!compact && f.description ? `<div class="small muted" style="white-space:pre-wrap">${esc(f.description)}</div>` : ""}${!compact && f.supplier_comment ? `<div class="small" style="margin-top:4px"><b>Tedarikçi:</b> ${esc(f.supplier_comment)}</div>` : ""}</td>
     ${compact ? "" : `<td><span class="badge">${esc(f.source)}</span></td><td>${esc(f.owner || "—")}</td>`}
     <td class="small" style="${overdue(f) ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(f.due_date)}${overdue(f) ? "<br>gecikti" : ""}</td>
     <td>${compact ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto">${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
-    ${compact ? "" : `<td><button class="sm" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
+    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindFindingActions(root, list) {
@@ -561,7 +750,12 @@ function bindFindingActions(root, list) {
     const all = list || (await api("/api/findings"));
     findingForm(all.find((f) => f.id == b.dataset.edit));
   }));
+  root.querySelectorAll("[data-notify]").forEach((b) => (b.onclick = () =>
+    notifyModal({ supplier_id: +b.dataset.sid, finding_ids: [+b.dataset.notify] })));
+  const all = root.querySelector(".fsel-all");
+  if (all) all.onchange = () => root.querySelectorAll(".fsel").forEach((c) => (c.checked = all.checked));
 }
+const selectedFindings = (root) => [...root.querySelectorAll(".fsel:checked")].map((c) => ({ id: +c.value, sid: +c.dataset.sid }));
 
 function findingForm(f) {
   const sel = (name, opts, val) => `<select name="${name}">${opts.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
@@ -573,6 +767,9 @@ function findingForm(f) {
     <div style="margin-bottom:12px"><label>Açıklama</label><textarea name="description">${esc(f.description || "")}</textarea></div>
     <div style="margin-bottom:12px"><label>Düzeltici / önleyici faaliyet</label><textarea name="action">${esc(f.action || "")}</textarea></div>
     <div style="margin-bottom:12px"><label>Sorumlu</label><input name="owner" value="${esc(f.owner || "")}"></div>
+    ${f.supplier_status ? `<div class="card" style="background:var(--bg)"><label>Tedarikçi yanıtı</label>${supStatusBadge(f)}
+      ${f.supplier_comment ? `<div style="white-space:pre-wrap;margin-top:6px">${esc(f.supplier_comment)}</div>` : ""}
+      <div class="small muted" style="margin-top:6px">${f.notified_at ? "Bildirildi: " + fmtDT(f.notified_at) : ""}${f.supplier_updated_at ? " · Son yanıt: " + fmtDT(f.supplier_updated_at) : ""}</div></div>` : ""}
     <div class="actions" style="justify-content:space-between">${f.id ? `<button type="button" class="danger" id="fdel">Sil</button>` : "<span></span>"}
       <div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></div></form>`, (box) => {
     box.querySelector("#f").onsubmit = async (e) => {
@@ -593,7 +790,7 @@ async function viewFindings() {
   const p = new URLSearchParams(location.hash.split("?")[1] || "");
   const state = { status: p.get("status") ?? "açık-tümü", source: "", sev: "", q: "" };
   $app.innerHTML = `<div class="page-head"><div><h1>Bulgular &amp; Aksiyonlar</h1><div class="muted">Uygunsuzluklar ve düzeltici faaliyet (DÖF) takibi</div></div>
-    <div class="actions"><button id="csv">CSV indir</button></div></div>
+    <div class="actions"><button id="nsel">Seçilenleri tedarikçiye bildir</button><button id="csv">CSV indir</button></div></div>
     <div class="card"><div class="filters">
       <select id="fs"><option value="açık-tümü">Açık + devam eden</option><option value="">Tümü</option><option>açık</option><option>devam ediyor</option><option>kapandı</option></select>
       <select id="fsrc"><option value="">Tüm kaynaklar</option><option>denetim</option><option>istihbarat</option><option>manuel</option></select>
@@ -607,7 +804,7 @@ async function viewFindings() {
     const sev = document.getElementById("fsev").value;
     const rows = list.filter((f) => (!sev || f.severity === sev) && (!od || overdue(f)) &&
       (!q || [f.title, f.supplier_name, f.owner, f.description].join(" ").toLowerCase().includes(q)));
-    document.getElementById("ft").innerHTML = findingsTable(rows, { withSupplier: true });
+    document.getElementById("ft").innerHTML = findingsTable(rows, { withSupplier: true, selectable: true });
     bindFindingActions(document.getElementById("ft"), list);
     draw.rows = rows;
   };
@@ -623,8 +820,15 @@ async function viewFindings() {
   ["fs", "fsrc"].forEach((i) => (document.getElementById(i).onchange = load));
   ["fsev", "fod"].forEach((i) => (document.getElementById(i).onchange = draw));
   document.getElementById("fq").oninput = draw;
+  document.getElementById("nsel").onclick = () => {
+    const sel = selectedFindings(document.getElementById("ft"));
+    if (!sel.length) return toast("Önce tablodan bulgu seçin.");
+    const sids = [...new Set(sel.map((x) => x.sid))];
+    if (sids.length > 1) return toast("Bildirim tedarikçi bazında gönderilir; tek bir tedarikçinin bulgularını seçin.");
+    notifyModal({ supplier_id: sids[0], finding_ids: sel.map((x) => x.id) });
+  };
   document.getElementById("csv").onclick = () => {
-    const cols = ["id", "supplier_name", "severity", "title", "source", "status", "owner", "due_date", "action", "description", "created_at", "closed_at"];
+    const cols = ["id", "supplier_name", "severity", "title", "source", "status", "owner", "due_date", "action", "description", "supplier_status", "supplier_comment", "supplier_due_date", "notified_at", "created_at", "closed_at"];
     const csv = [cols.join(";"), ...(draw.rows || []).map((f) => cols.map((c) => `"${String(f[c] ?? "").replace(/"/g, '""')}"`).join(";"))].join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
@@ -689,7 +893,12 @@ function scanDetail(r) {
 
 async function viewScan(id) {
   const s = await api(`/api/scans/${id}`);
-  $app.innerHTML = `<div class="page-head"><div><div class="small"><a href="#/tedarikci/${s.supplier_id}/istihbarat">← Tedarikçiye dön</a></div><h1>Tarama sonucu</h1></div></div>${scanDetail(s.result)}`;
+  $app.innerHTML = `<div class="page-head"><div><div class="small"><a href="#/tedarikci/${s.supplier_id}/istihbarat">← Tedarikçiye dön</a></div><h1>Tarama sonucu</h1></div>
+    <div class="actions"><button class="primary" id="nscan">Tedarikçiye bildir</button></div></div>${scanDetail(s.result)}`;
+  document.getElementById("nscan").onclick = async () => {
+    const f = await api(`/api/findings?supplier_id=${s.supplier_id}&source=istihbarat&status=açık-tümü`);
+    notifyModal({ supplier_id: s.supplier_id, scan_id: s.id, finding_ids: f.filter((x) => x.title.startsWith(`[${s.domain}]`)).map((x) => x.id) });
+  };
 }
 
 // ================================================================ RAPOR
