@@ -169,8 +169,13 @@ function bindTheme(root) {
   }));
 }
 
-function showLogin() {
+async function showLogin() {
+  const sso = await api("/api/auth/sso/config").catch(() => ({ enabled: false }));
+  const err = new URLSearchParams(location.hash.split("?")[1] || "").get("sso_error");
   authShell(`<h1>Giriş</h1><div class="muted" style="margin-bottom:16px">Tedarikçi Denetim</div>
+    ${err ? `<div class="card" style="background:var(--bad-bg);color:var(--bad);border-color:var(--bad-bd)">${esc(decodeURIComponent(err))}</div>` : ""}
+    ${sso.enabled ? `<a class="btn" style="width:100%;justify-content:center;margin-bottom:14px" href="/api/auth/sso/start">${esc(sso.button_label)}</a>
+      <div class="small muted" style="text-align:center;margin-bottom:10px">veya e-posta ve parola ile</div>` : ""}
     <form id="lf"><label>E-posta</label><input name="email" type="email" required autocomplete="username">
     <label>Parola</label><input name="password" type="password" required autocomplete="current-password">
     <button class="primary" style="width:100%">Giriş yap</button></form>`);
@@ -644,6 +649,8 @@ async function viewSettings() {
       <input id="testTo" placeholder="Test alıcısı (e-posta)" style="width:260px"><button type="button" id="test">Test e-postası gönder</button></div></div>
   <div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
   <div class="card" style="margin-top:16px" id="schcard"></div>
+  <div class="card" style="margin-top:16px" id="tkcard"></div>
+  <div class="card" style="margin-top:16px" id="ssocard"></div>
   <div class="card" style="margin-top:16px" id="wcard"></div>
   <div class="card" style="margin-top:16px" id="sancard"></div>
   <div class="card" style="margin-top:16px" id="whcard"></div>
@@ -658,6 +665,8 @@ async function viewSettings() {
   webhookAdmin(document.getElementById("whcard"));
   weightsAdmin(document.getElementById("wcard"));
   schedulerAdmin(document.getElementById("schcard"));
+  ticketingAdmin(document.getElementById("tkcard"));
+  ssoAdmin(document.getElementById("ssocard"));
   sanctionsAdmin(document.getElementById("sancard"));
   document.getElementById("sf").onsubmit = async (e) => {
     e.preventDefault();
@@ -1144,10 +1153,11 @@ function findingsTable(list, { compact = false, withSupplier = false, selectable
     ${compact ? "" : `<td><span class="badge">${esc(f.source)}</span></td><td>${esc(f.owner || "—")}</td>`}
     <td class="small" style="${overdue(f) ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(f.due_date)}${overdue(f) ? "<br>gecikti" : ""}</td>
     <td>${compact || f.status === "risk kabul edildi" ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto" ${can("finding:write") ? "" : "disabled"}>${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}${excBadge(f.exception)}</td>
-    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> ${["açık", "devam ediyor"].includes(f.status) && !(f.exception || "").endsWith("|beklemede") ? `<button class="sm" data-perm="finding:dispute" data-exc="${f.id}" title="İtiraz veya risk kabulü talebi">İstisna</button> ` : ""}<button class="sm" data-perm="capa:write" data-capa="${f.id}" data-sid="${f.supplier_id}" title="Bu bulgu için CAPA aç">CAPA</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
+    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> ${["açık", "devam ediyor"].includes(f.status) && !(f.exception || "").endsWith("|beklemede") ? `<button class="sm" data-perm="finding:dispute" data-exc="${f.id}" title="İtiraz veya risk kabulü talebi">İstisna</button> ` : ""}<button class="sm" data-perm="capa:write" data-capa="${f.id}" data-sid="${f.supplier_id}" title="Bu bulgu için CAPA aç">CAPA</button> <span class="tk-slot" data-tkf="${f.id}"></span><button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindFindingActions(root, list) {
+  ticketSlots(root, "finding");
   root.querySelectorAll(".fstatus").forEach((sel) => (sel.onchange = async () => {
     try { await api(`/api/findings/${sel.dataset.fid}`, { method: "PUT", body: { status: sel.value } }); toast("Durum güncellendi"); router(); }
     catch (e) { toast(e.message); }
@@ -1530,6 +1540,8 @@ async function viewCapa(id) {
     </div></div>`;
   bindEvidence(document.getElementById("evl"), router);
   capaMessages(c);
+  const hd = $app.querySelector(".page-head .muted");
+  if (hd && can("ticket:read")) { hd.insertAdjacentHTML("beforeend", ` <span class="tk-slot" data-tkf="${c.id}"></span>`); ticketSlots($app, "capa"); }
   const ev = document.getElementById("ev");
   if (ev) ev.onclick = () => uploadModal({ capa_id: c.id }, router);
   const sf = document.getElementById("sf");
@@ -1570,7 +1582,7 @@ async function webhookAdmin(root) {
     <div class="small muted">Yeni bulgu, bulgu durum değişimi, CAPA adımları ve denetim tamamlanması gibi olaylar seçtiğiniz sistemlere (SIEM, ticket, Slack/Teams köprüsü, GRC) imzalı JSON olarak iletilir.</div></div>
     <button id="nwh">+ Abonelik</button></div>
   ${subs.items.length ? `<table><thead><tr><th>Ad</th><th>Adres</th><th>Olaylar</th><th>Kapsam</th><th></th></tr></thead><tbody>${subs.items.map((w) => `<tr>
-    <td><b>${esc(w.name)}</b> ${w.active ? "" : `<span class="badge">pasif</span>`}</td><td class="small" style="word-break:break-all">${esc(w.url)}${w.secret ? ` <span class="badge b-ok">imzalı</span>` : ""}</td>
+    <td><b>${esc(w.name)}</b> ${w.active ? "" : `<span class="badge">pasif</span>`}</td><td class="small" style="word-break:break-all"><span class="badge">${esc(w.format || "json")}</span> ${esc(w.url)}${w.secret && (w.format || "json") === "json" ? ` <span class="badge b-ok">imzalı</span>` : ""}</td>
     <td class="small">${w.events.map((e) => esc(EVENT_TR[e] || e)).join(", ")}</td><td class="small">${esc(w.supplier_name || "Tüm tedarikçiler")}</td>
     <td style="white-space:nowrap"><button class="sm" data-wt="${w.id}">Test</button> <button class="sm" data-we="${w.id}">Düzenle</button></td></tr>`).join("")}</tbody></table>`
     : `<div class="empty small">Abonelik yok.</div>`}
@@ -1580,7 +1592,9 @@ async function webhookAdmin(root) {
   const form = (w = { events: ["*"], active: true }) => modal(`<h2>${w.id ? "Aboneliği düzenle" : "Yeni webhook aboneliği"}</h2><form id="wf">
     <div class="row"><div><label>Ad</label><input name="name" required value="${esc(w.name || "")}" placeholder="ör. SIEM, Jira"></div>
       <div><label>Kapsam</label><select name="supplier_id"><option value="">Tüm tedarikçiler</option>${sups.map((x) => `<option value="${x.id}" ${x.id === w.supplier_id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div></div>
-    <label>Adres (URL)</label><input name="url" required value="${esc(w.url || "")}" placeholder="https://...">
+    <div class="row"><div style="grid-column:span 2"><label>Adres (URL)</label><input name="url" required value="${esc(w.url || "")}" placeholder="https://..."></div>
+      <div><label>Biçim</label><select name="format">${[["json", "JSON (imzalı, sistemler için)"], ["slack", "Slack (Incoming Webhook)"], ["teams", "Microsoft Teams (Workflows)"]].map(([v, l]) => `<option value="${v}" ${(w.format || "json") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
+    <div class="small muted" style="margin:-4px 0 8px">Slack: Uygulama → Incoming Webhooks → kanal adresi. Teams: kanalda "Workflows → Post to a channel when a webhook request is received" akışının adresi.</div>
     <div class="row" style="margin-top:8px"><div><label>İmza anahtarı</label><div style="display:flex;gap:6px"><input name="secret" value="${esc(w.secret || "")}" autocomplete="off"><button type="button" id="wg">Üret</button></div></div>
       <div><label>Durum</label><select name="active"><option value="1" ${w.active ? "selected" : ""}>aktif</option><option value="0" ${w.active ? "" : "selected"}>pasif</option></select></div></div>
     <label>Olaylar</label><div class="set-grid" style="margin-bottom:12px">${Object.entries(EVENT_TR).map(([k, v]) => `<label class="te-small"><input type="checkbox" name="ev" value="${k}" ${w.events.includes(k) ? "checked" : ""}> ${v}</label>`).join("")}</div>
@@ -1935,5 +1949,78 @@ async function schedulerAdmin(root) {
     e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> Çalışıyor…`;
     try { const r = await api("/api/scheduler/run", { method: "POST" }); toast("Tamamlandı: " + Object.keys(r.ran).join(", "), 5000); refreshBell(); } catch (err) { toast(err.message); }
     schedulerAdmin(root);
+  };
+}
+
+
+// ================================================================ ENTEGRASYONLAR
+let TK_CFG = null;
+async function ticketSlots(root, entity) {
+  const slots = [...root.querySelectorAll(".tk-slot")];
+  if (!slots.length || !can("ticket:read")) return;
+  TK_CFG = TK_CFG || (can("settings:manage") ? await api("/api/integrations/ticketing").catch(() => null) : { ready: true, provider: "" });
+  const all = await api(`/api/tickets?entity=${entity}`).catch(() => []);
+  const prov = { jira: "Jira", servicenow: "ServiceNow" };
+  slots.forEach((sl) => {
+    const t = all.find((x) => x.entity_id == sl.dataset.tkf);
+    if (t) { sl.innerHTML = `<a class="badge ${t.status === "tamamlandı" ? "b-ok" : ""}" href="${esc(t.url)}" target="_blank" rel="noopener" title="${esc(t.remote_status || "")}">${esc(t.key)}</a> `; return; }
+    if (!can("finding:write") || (TK_CFG && TK_CFG.ready === false)) return;
+    sl.innerHTML = `<button class="sm" title="${esc(prov[TK_CFG?.provider] || "Jira / ServiceNow")} ticket'ı aç">Ticket</button> `;
+    sl.querySelector("button").onclick = async (e) => {
+      e.target.disabled = true;
+      try { const r = await api("/api/tickets", { method: "POST", body: { entity, entity_id: +sl.dataset.tkf } }); toast(`${r.key} açıldı`); sl.innerHTML = `<a class="badge" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.key)}</a> `; }
+      catch (err) { toast(err.message, 7000); e.target.disabled = false; }
+    };
+  });
+}
+
+async function ticketingAdmin(root) {
+  const c = (TK_CFG = await api("/api/integrations/ticketing"));
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Jira / ServiceNow</h2>
+    <div class="small muted">Bulgu ve CAPA'lardan tek tıkla ticket açılır; durum her gün eşitlenir. "Otomatik kapat" açıksa ticket tamamlanınca bulgu da kapanır.</div></div>
+    ${c.ready ? `<span class="badge b-ok">bağlı</span>` : `<span class="badge">yapılandırılmadı</span>`}</div>
+  <form id="tkf"><div class="row"><div><label>Sağlayıcı</label><select name="provider"><option value="">Kapalı</option><option value="jira" ${c.provider === "jira" ? "selected" : ""}>Jira Cloud</option><option value="servicenow" ${c.provider === "servicenow" ? "selected" : ""}>ServiceNow</option></select></div>
+    <div><label>&nbsp;</label><label class="te-small"><input type="checkbox" name="auto_close" ${c.auto_close ? "checked" : ""}> Ticket tamamlanınca bulguyu kapat</label></div></div>
+    <div id="tkj" class="row"><div><label>Jira adresi</label><input name="jira_base_url" placeholder="https://sirket.atlassian.net" value="${esc(c.jira_base_url)}"></div>
+      <div><label>E-posta</label><input name="jira_email" value="${esc(c.jira_email)}"></div><div><label>API token ${c.jira_api_token_set ? `<span class="badge b-ok">kayıtlı</span>` : ""}</label><input type="password" name="jira_api_token" autocomplete="off" placeholder="${c.jira_api_token_set ? "Değiştirmek için yazın" : "id.atlassian.com → Security → API tokens"}"></div>
+      <div><label>Proje anahtarı</label><input name="jira_project_key" placeholder="SEC" value="${esc(c.jira_project_key)}"></div><div><label>İş tipi</label><input name="jira_issue_type" value="${esc(c.jira_issue_type)}"></div></div>
+    <div id="tks" class="row"><div><label>ServiceNow adresi</label><input name="servicenow_instance_url" placeholder="https://sirket.service-now.com" value="${esc(c.servicenow_instance_url)}"></div>
+      <div><label>Kullanıcı</label><input name="servicenow_username" value="${esc(c.servicenow_username)}"></div><div><label>Parola ${c.servicenow_password_set ? `<span class="badge b-ok">kayıtlı</span>` : ""}</label><input type="password" name="servicenow_password" autocomplete="off"></div>
+      <div><label>Tablo</label><input name="servicenow_table" value="${esc(c.servicenow_table)}"></div><div><label>Atama grubu (sys_id/ad)</label><input name="servicenow_assignment_group" value="${esc(c.servicenow_assignment_group)}"></div></div>
+    <div class="actions" style="justify-content:flex-end"><button type="button" id="tkt">Bağlantıyı test et</button><button class="primary">Kaydet</button></div></form>`;
+  const f = root.querySelector("#tkf");
+  const sync = () => { root.querySelector("#tkj").classList.toggle("hidden", f.provider.value !== "jira"); root.querySelector("#tks").classList.toggle("hidden", f.provider.value !== "servicenow"); };
+  f.provider.onchange = sync; sync();
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(f)); d.auto_close = f.auto_close.checked;
+    try { await api("/api/integrations/ticketing", { method: "PUT", body: d }); toast("Kaydedildi"); ticketingAdmin(root); } catch (err) { toast(err.message); }
+  };
+  root.querySelector("#tkt").onclick = () => api("/api/integrations/ticketing/test", { method: "POST" }).then((r) => toast("Bağlantı başarılı — " + r.message, 6000)).catch((e) => toast(e.message, 7000));
+}
+
+async function ssoAdmin(root) {
+  const c = await api("/api/integrations/sso");
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Tek oturum açma (SSO)</h2>
+    <div class="small muted">Microsoft Entra ID veya Google Workspace hesabıyla giriş (OpenID Connect). Sağlayıcıda uygulama kaydı oluşturup yönlendirme adresini girin.</div></div>
+    ${c.enabled ? `<span class="badge b-ok">açık</span>` : `<span class="badge">kapalı</span>`}</div>
+  <div class="small" style="margin-bottom:10px">Yönlendirme (redirect) adresi: <code>${esc(c.redirect_uri)}</code></div>
+  <form id="ssf"><div class="row"><div style="grid-column:span 2"><label>Yayıncı (issuer)</label><input name="issuer" value="${esc(c.issuer)}" placeholder="https://login.microsoftonline.com/<kiracı-id>/v2.0">
+      <div class="small muted" style="margin-top:4px"><a href="#" data-iss="https://login.microsoftonline.com/<kiracı-id>/v2.0">Microsoft Entra</a> · <a href="#" data-iss="https://accounts.google.com">Google</a></div></div>
+    <div><label class="te-small" style="margin-top:22px"><input type="checkbox" name="enabled" ${c.enabled ? "checked" : ""}> SSO açık</label></div></div>
+    <div class="row"><div><label>İstemci kimliği (client ID)</label><input name="client_id" value="${esc(c.client_id)}"></div>
+      <div><label>İstemci sırrı ${c.client_secret_set ? `<span class="badge b-ok">kayıtlı</span>` : ""}</label><input type="password" name="client_secret" autocomplete="off" placeholder="${c.client_secret_set ? "Değiştirmek için yazın" : ""}"></div>
+      <div><label>İzinli alan adları</label><input name="allowed_domains" value="${esc(c.allowed_domains)}" placeholder="sirket.com.tr"></div></div>
+    <div class="row"><div><label class="te-small"><input type="checkbox" name="auto_create" ${c.auto_create ? "checked" : ""}> İlk girişte kullanıcıyı otomatik oluştur</label></div>
+      <div><label>Otomatik oluşturulan rol</label><select name="default_role"><option value="viewer" ${c.default_role === "viewer" ? "selected" : ""}>İzleyici</option><option value="auditor" ${c.default_role === "auditor" ? "selected" : ""}>Denetçi</option></select></div>
+      <div><label>Düğme metni</label><input name="button_label" value="${esc(c.button_label)}"></div></div>
+    <div class="small muted">Tedarikçi kullanıcıları SSO ile otomatik oluşturulmaz; onları Kullanıcılar sayfasından ekleyin. Yönetici rolü hiçbir zaman otomatik verilmez.</div>
+    <div class="actions" style="justify-content:flex-end;margin-top:8px"><button class="primary">Kaydet</button></div></form>`;
+  const f = root.querySelector("#ssf");
+  root.querySelectorAll("[data-iss]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); f.issuer.value = a.dataset.iss; f.issuer.focus(); }));
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(f)); for (const k of ["enabled", "auto_create"]) d[k] = f[k].checked;
+    try { await api("/api/integrations/sso", { method: "PUT", body: d }); toast("Kaydedildi"); ssoAdmin(root); } catch (err) { toast(err.message, 6000); }
   };
 }

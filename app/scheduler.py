@@ -237,14 +237,20 @@ async def run_all(force: bool = False) -> dict:
     today = dt.date.today().isoformat()
     with get_db() as db:
         conf = get_conf(db)
-        last = {j: _last_run(db, j) for j in ("monitor", "reassess", "reminders", "waivers")}
+        last = {j: _last_run(db, j) for j in ("monitor", "reassess", "reminders", "waivers", "tickets")}
     plan = [("waivers", True, job_waivers), ("reassess", conf["reassess_enabled"], job_reassess),
-            ("reminders", conf["reminders_enabled"], job_reminders), ("monitor", conf["monitor_enabled"], None)]
+            ("reminders", conf["reminders_enabled"], job_reminders), ("monitor", conf["monitor_enabled"], None), ("tickets", True, None)]
     for name, enabled, fn in plan:
         if not enabled or (not force and last[name] and last[name][:10] == today):
             continue
         try:
-            res = (await job_monitor(force)) if name == "monitor" else fn()
+            if name == "monitor":
+                res = await job_monitor(force)
+            elif name == "tickets":
+                from .ticketing import sync_open
+                res = await sync_open()
+            else:
+                res = fn()
         except Exception as e:  # bir görevin hatası diğerlerini durdurmasın
             res = {"error": f"{type(e).__name__}: {e}"[:300]}
         with get_db() as db:
@@ -327,7 +333,7 @@ class ConfIn(BaseModel):
 def scheduler_status():
     with get_db() as db:
         jobs = {}
-        for j in ("monitor", "reassess", "reminders", "waivers"):
+        for j in ("monitor", "reassess", "reminders", "waivers", "tickets"):
             r = db.execute("SELECT value FROM settings WHERE key=?", (f"job_result_{j}",)).fetchone()
             jobs[j] = {"last_run": _last_run(db, j), "result": json.loads(r[0]) if r else None}
         return {"config": get_conf(db), "jobs": jobs, "running": _task is not None}

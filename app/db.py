@@ -397,6 +397,30 @@ CREATE TABLE IF NOT EXISTS reminders_sent (
     sent_at      TEXT NOT NULL
 );
 
+-- ---------------------------------------------------------------- Entegrasyonlar
+CREATE TABLE IF NOT EXISTS external_tickets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity        TEXT NOT NULL,            -- finding / capa
+    entity_id     INTEGER NOT NULL,
+    supplier_id   INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
+    provider      TEXT NOT NULL,            -- jira / servicenow
+    key           TEXT,                     -- ör. SEC-123 / INC0010001
+    remote_id     TEXT,
+    url           TEXT,
+    status        TEXT NOT NULL DEFAULT 'açık',   -- açık / tamamlandı
+    remote_status TEXT,
+    synced_at     TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_entity ON external_tickets(entity, entity_id);
+
+CREATE TABLE IF NOT EXISTS sso_states (
+    state     TEXT PRIMARY KEY,
+    verifier  TEXT NOT NULL,
+    nonce     TEXT NOT NULL,
+    created   REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -465,6 +489,7 @@ MIGRATIONS = {
         "auto_notify": "INTEGER NOT NULL DEFAULT 0",
     },
     "evidence_files": {"contract_id": "INTEGER REFERENCES contracts(id) ON DELETE CASCADE"},
+    "webhook_subscriptions": {"format": "TEXT NOT NULL DEFAULT 'json'"},   # json / slack / teams
     "findings": {
         "question_id": "TEXT",                   # denetimdeki soru (denetim kaynaklı bulgular)
         "supplier_status": "TEXT",               # bildirildi / okundu / aksiyon planlandı / giderildi / itiraz

@@ -14,7 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -59,21 +59,83 @@ def _body(ev: dict, supplier_name: str | None) -> dict:
             "supplier": {"id": ev["supplier_id"], "name": supplier_name} if ev["supplier_id"] else None}
 
 
+# ------------------------------------------------------------------ Slack / Teams mesaj biçimleri (saf)
+EVENT_TITLES = {
+    "finding.created": "Yeni bulgu", "finding.status_changed": "Bulgu durumu değişti", "capa.created": "CAPA açıldı",
+    "capa.submitted": "CAPA onaya gönderildi", "capa.approved": "CAPA onaylandı", "capa.rejected": "CAPA reddedildi",
+    "capa.commented": "CAPA'ya mesaj", "audit.completed": "Denetim tamamlandı", "assessment.sent": "Öz-değerlendirme gönderildi",
+    "assessment.submitted": "Öz-değerlendirme cevaplandı", "alert.created": "Alarm", "test": "Test bildirimi",
+}
+SEV_EMOJI = {"kritik": "🔴", "yüksek": "🟠", "orta": "🟡", "düşük": "⚪", "bilgi": "🔵"}
+LINKS = {"finding": "#/bulgular", "capa": "#/capa/{id}", "audit": "#/denetim/{id}", "alert": "#/alarmlar"}
+
+
+def summarize_event(body: dict, base_url: Optional[str] = None) -> dict:
+    """Saf: olaydan insan okunur başlık, satırlar ve bağlantı üretir."""
+    data = body.get("data") or {}
+    title = EVENT_TITLES.get(body.get("event"), body.get("event"))
+    sev = data.get("severity")
+    head = f"{SEV_EMOJI.get(sev, '')} {title}".strip()
+    main = data.get("title") or data.get("message") or ""
+    lines = []
+    if body.get("supplier") and body["supplier"].get("name"):
+        lines.append(f"Tedarikçi: {body['supplier']['name']}")
+    if data.get("from") and data.get("to"):
+        lines.append(f"Durum: {data['from']} → {data['to']}" + (f" ({data['reason']})" if data.get("reason") else ""))
+    if data.get("score") is not None:
+        lines.append(f"Puan: {data['score']}" + (f" · karar: {data['decision']}" if data.get("decision") else ""))
+    if body.get("event") == "capa.commented" and data.get("message"):
+        lines.append(f"{data.get('author', '')}: {data['message']}")
+    if data.get("detail"):
+        lines.append(str(data["detail"]))
+    link = None
+    if base_url and body.get("entity") in LINKS:
+        link = base_url.rstrip("/") + "/" + LINKS[body["entity"]].format(id=body.get("entity_id"))
+    return {"head": head, "main": main, "lines": lines, "link": link}
+
+
+def slack_body(body: dict, base_url: Optional[str] = None) -> dict:
+    m = summarize_event(body, base_url)
+    text = f"*{m['head']}*" + (f"\n{m['main']}" if m["main"] else "") + "".join(f"\n{x}" for x in m["lines"])
+    if m["link"]:
+        text += f"\n<{m['link']}|Uygulamada aç>"
+    return {"text": f"{m['head']}: {m['main']}"[:150], "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}]}
+
+
+def teams_body(body: dict, base_url: Optional[str] = None) -> dict:
+    """Teams 'Workflows' (Power Automate) gelen webhook'u için Adaptive Card mesajı."""
+    m = summarize_event(body, base_url)
+    items = [{"type": "TextBlock", "text": m["head"], "weight": "Bolder", "size": "Medium", "wrap": True}]
+    if m["main"]:
+        items.append({"type": "TextBlock", "text": m["main"], "wrap": True})
+    items += [{"type": "TextBlock", "text": x, "isSubtle": True, "wrap": True, "spacing": "Small"} for x in m["lines"]]
+    card = {"type": "AdaptiveCard", "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "version": "1.4", "body": items}
+    if m["link"]:
+        card["actions"] = [{"type": "Action.OpenUrl", "title": "Uygulamada aç", "url": m["link"]}]
+    return {"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}
+
+
 async def _send(delivery_id: int) -> dict:
     from .notify import sign
     with get_db() as db:
         d = row(db.execute(
-            "SELECT d.*, s.url, s.secret, e.type, e.payload, e.supplier_id, e.created_at AS ev_created, sp.name AS supplier_name "
+            "SELECT d.*, s.url, s.secret, s.format, e.type, e.payload, e.supplier_id, e.created_at AS ev_created, sp.name AS supplier_name "
             "FROM webhook_deliveries d JOIN webhook_subscriptions s ON s.id=d.subscription_id JOIN events e ON e.id=d.event_id "
             "LEFT JOIN suppliers sp ON sp.id=e.supplier_id WHERE d.id=?", (delivery_id,)).fetchone())
     if not d:
         raise HTTPException(404, "Teslimat bulunamadı")
-    body = json.dumps(_body({"id": d["event_id"], "payload": d["payload"], "created_at": d["ev_created"],
-                             "supplier_id": d["supplier_id"]}, d["supplier_name"]), ensure_ascii=False).encode()
+    full = _body({"id": d["event_id"], "payload": d["payload"], "created_at": d["ev_created"], "supplier_id": d["supplier_id"]},
+                 d["supplier_name"])
+    fmt = d.get("format") or "json"
+    if fmt in ("slack", "teams"):
+        with get_db() as db:
+            b = db.execute("SELECT value FROM settings WHERE key='public_base_url'").fetchone()
+        full = (slack_body if fmt == "slack" else teams_body)(full, b[0] if b and b[0] else None)
+    body = json.dumps(full, ensure_ascii=False).encode()
     ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp()))
     headers = {"Content-Type": "application/json; charset=utf-8", "User-Agent": "TedarikciDenetim-Webhook/1.0",
                "X-TD-Event": d["type"], "X-TD-Delivery": str(delivery_id), "X-TD-Timestamp": ts}
-    if d["secret"]:
+    if d["secret"] and fmt == "json":
         headers["X-TD-Signature"] = sign(d["secret"], ts, body)
     status, code, err = "gönderildi", None, None
     try:
@@ -115,6 +177,7 @@ class SubscriptionIn(BaseModel):
     events: list[str] = ["*"]
     supplier_id: Optional[int] = None
     active: bool = True
+    format: Literal["json", "slack", "teams"] = "json"
 
     @field_validator("url")
     @classmethod
@@ -153,8 +216,8 @@ def list_subscriptions():
 @router.post("/api/webhooks", status_code=201)
 def create_subscription(body: SubscriptionIn):
     with get_db() as db:
-        sid = db.execute("INSERT INTO webhook_subscriptions (name, url, secret, events, supplier_id, active) VALUES (?,?,?,?,?,?)",
-                         (body.name, body.url, body.secret, json.dumps(body.events), body.supplier_id, int(body.active))).lastrowid
+        sid = db.execute("INSERT INTO webhook_subscriptions (name, url, secret, events, supplier_id, active, format) VALUES (?,?,?,?,?,?,?)",
+                         (body.name, body.url, body.secret, json.dumps(body.events), body.supplier_id, int(body.active), body.format)).lastrowid
         return _sub(db, sid)
 
 
@@ -162,8 +225,8 @@ def create_subscription(body: SubscriptionIn):
 def update_subscription(sid: int, body: SubscriptionIn):
     with get_db() as db:
         _sub(db, sid)
-        db.execute("UPDATE webhook_subscriptions SET name=?, url=?, secret=?, events=?, supplier_id=?, active=? WHERE id=?",
-                   (body.name, body.url, body.secret, json.dumps(body.events), body.supplier_id, int(body.active), sid))
+        db.execute("UPDATE webhook_subscriptions SET name=?, url=?, secret=?, events=?, supplier_id=?, active=?, format=? WHERE id=?",
+                   (body.name, body.url, body.secret, json.dumps(body.events), body.supplier_id, int(body.active), body.format, sid))
         return _sub(db, sid)
 
 

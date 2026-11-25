@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import assessments, capa, events, evidence, exceptions, importer, lifecycle, risk, scheduler, summary
+from . import assessments, capa, events, evidence, exceptions, importer, lifecycle, risk, scheduler, sso, summary, ticketing
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -741,6 +741,8 @@ app.include_router(lifecycle.router)
 app.include_router(exceptions.router)
 app.include_router(assessments.router)
 app.include_router(scheduler.router)
+app.include_router(ticketing.router)
+app.include_router(sso.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

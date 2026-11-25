@@ -33,13 +33,13 @@ ROLES: dict[str, dict] = {
         "supplier:read", "supplier:write", "audit:read", "audit:write", "template:read", "template:write",
         "finding:read", "finding:write", "capa:read", "capa:write", "capa:review", "evidence:read", "evidence:write",
         "intel:scan", "notify:send", "report:read", "summary:read", "settings:read", "contract:read", "contract:write",
-        "finding:dispute", "capa:comment", "alerts:read"]},
+        "finding:dispute", "capa:comment", "alerts:read", "ticket:read"]},
     "supplier": {"title": "Tedarikçi", "perms": [
         "supplier:read", "audit:read", "finding:read", "capa:read", "capa:submit", "evidence:read", "evidence:write",
         "report:read", "summary:read", "finding:dispute", "capa:comment", "assessment:respond"]},
     "viewer": {"title": "İzleyici", "perms": [
         "supplier:read", "audit:read", "template:read", "finding:read", "capa:read", "evidence:read",
-        "report:read", "summary:read", "contract:read", "alerts:read"]},
+        "report:read", "summary:read", "contract:read", "alerts:read", "ticket:read"]},
 }
 
 # (yöntem, yol deseni, gereken yetki). None = giriş yapmış herkes. Sıra önemlidir; ilk eşleşen kullanılır.
@@ -106,10 +106,13 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("PUT", rf"/api/users/{_R}", "user:manage"), ("DELETE", rf"/api/users/{_R}", "user:manage"),
     ("GET", r"/api/alerts", "alerts:read"), ("POST", rf"/api/alerts/({_R}/read|read-all)", "alerts:read"),
     ("GET", r"/api/scheduler", "settings:manage"), ("PUT", r"/api/scheduler", "settings:manage"), ("POST", r"/api/scheduler/run", "settings:manage"),
+    ("GET", r"/api/integrations/.*", "settings:manage"), ("PUT", r"/api/integrations/.*", "settings:manage"),
+    ("POST", r"/api/integrations/ticketing/test", "settings:manage"),
+    ("GET", r"/api/tickets", "ticket:read"), ("POST", r"/api/tickets", "finding:write"), ("POST", rf"/api/tickets/{_R}/sync", "finding:write"),
     ("GET", r"/api/roles", "user:manage"), ("GET", r"/api/audit-logs", "auditlog:read"),
 ]
 _COMPILED = [(m, re.compile(f"^{p}$"), perm) for m, p, perm in PERMS]
-PUBLIC = re.compile(r"^/api/(public/.*|auth/(login|logout|setup|status))$")
+PUBLIC = re.compile(r"^/api/(public/.*|auth/(login|logout|setup|status|sso/start|sso/callback|sso/config))$")
 
 
 def required_perm(method: str, path: str) -> tuple[bool, Optional[str]]:

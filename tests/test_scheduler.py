@@ -86,7 +86,8 @@ def test_scheduler_api_and_perms(admin, login):
                                           "reassess_lead_days": 10, "reminders_enabled": True, "reminder_every_days": 3}).json()
     assert c["config"]["monitor_interval_hours"] == 12
     r = admin.post("/api/scheduler/run").json()
-    assert set(r["ran"]) == {"waivers", "reassess", "reminders"} and r["jobs"]["reassess"]["last_run"]
+    assert set(r["ran"]) == {"waivers", "reassess", "reminders", "tickets"} and r["jobs"]["reassess"]["last_run"]
+    assert r["ran"]["tickets"] == {"skipped": "yapılandırılmamış"}
     s = admin.post("/api/suppliers", json={"name": "S"}).json()
     admin.post("/api/users", json={"name": "t", "email": "t@x.com", "role": "supplier", "supplier_id": s["id"], "password": PW})
     admin.post("/api/users", json={"name": "d", "email": "d@x.com", "role": "auditor", "password": PW})
