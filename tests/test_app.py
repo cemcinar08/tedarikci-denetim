@@ -127,7 +127,7 @@ def test_full_flow(client, monkeypatch):
     # Denetim + cevaplar + puan
     a = client.post(f"/api/suppliers/{sid}/audits", json={"audit_date": "2026-01-10", "question_set_ids": [genel["id"]]}).json()
     ids = [q["id"] for sec in a["checklist"] for q in sec["questions"]]
-    assert len(ids) == 27
+    assert len(ids) == 29  # 27 + 2 koşullu alt soru
     answers = {q: {"answer": "uygun"} for q in ids}
     answers[ids[0]] = {"answer": "uygun değil", "note": "kanıt yok"}
     answers[ids[1]] = {"answer": "kısmen"}

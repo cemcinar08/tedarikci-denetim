@@ -17,6 +17,8 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
+from . import template_store as ts
+from . import templates_engine as eng
 from . import auth
 from .auth import ensure_supplier_access, is_supplier_user, scoped
 
@@ -100,31 +102,9 @@ class SupplierIn(BaseModel):
         return out
 
 
-class SectionIn(BaseModel):
-    title: str = Field(min_length=1)
-    weight: float = Field(default=10, gt=0, le=1000)
-    questions: list[str]
-
-    @field_validator("questions")
-    @classmethod
-    def _qs(cls, v):
-        v = [q.strip() for q in v if q and q.strip()]
-        if not v:
-            raise ValueError("Her bölümde en az bir soru olmalı")
-        return v
-
-
-class QuestionSetIn(BaseModel):
-    name: str = Field(min_length=1)
-    standard: Optional[str] = "Özel"
-    description: Optional[str] = None
-    sections: list[SectionIn] = Field(min_length=1)
-
-
-def normalize_sections(sections: list[SectionIn]) -> list[dict]:
-    return [{"id": f"s{i}", "title": sec.title.strip(), "weight": sec.weight,
-             "questions": [{"id": f"s{i}.{j}", "text": q} for j, q in enumerate(sec.questions, 1)]}
-            for i, sec in enumerate(sections, 1)]
+SectionIn = ts.SectionIn
+QuestionSetIn = ts.TemplateIn
+normalize_sections = ts.normalize_sections
 
 
 class AuditIn(BaseModel):
@@ -212,7 +192,7 @@ def _summary(db, s: dict) -> dict:
     """Tedarikçi için bileşik risk özeti."""
     sid = s["id"]
     last_audit = row(db.execute(
-        "SELECT id, audit_date, score FROM audits WHERE supplier_id=? AND status='tamamlandı' AND score IS NOT NULL "
+        "SELECT id, audit_date, score, decision, risk_level FROM audits WHERE supplier_id=? AND status='tamamlandı' AND score IS NOT NULL "
         "ORDER BY audit_date DESC, id DESC LIMIT 1", (sid,)).fetchone())
     next_audit = row(db.execute(
         "SELECT id, audit_date FROM audits WHERE supplier_id=? AND status!='tamamlandı' ORDER BY audit_date LIMIT 1",
@@ -232,7 +212,10 @@ def _summary(db, s: dict) -> dict:
     overall = round(sum(v * w for v, w in parts) / sum(w for _, w in parts), 1) if parts else None
 
     critical = f["critical"] or 0
-    if overall is None:
+    rejected = bool(last_audit and last_audit["decision"] == "rejected")
+    if rejected:  # kill-switch veya çok düşük puan: puandan bağımsız yüksek risk
+        risk = "yüksek"
+    elif overall is None:
         risk = "bilinmiyor"
     elif critical or overall < 50 or (s["criticality"] == "yüksek" and overall < 70):
         risk = "yüksek"
@@ -242,6 +225,7 @@ def _summary(db, s: dict) -> dict:
         risk = "düşük"
     return {
         "audit_score": audit, "audit_rating": cl.rating(audit),
+        "audit_decision": last_audit["decision"] if last_audit else None,
         "last_audit_date": last_audit["audit_date"] if last_audit else None,
         "next_audit_date": next_audit["audit_date"] if next_audit else None,
         "intel_score": intel,
@@ -258,25 +242,22 @@ def meta():
     return {"due_days": DUE_DAYS}
 
 
-# ============================================================ Soru setleri
+# ============================================================ Soru setleri (audit_templates)
 def _get_set(db, qid: int) -> dict:
-    qs = row(db.execute("SELECT * FROM question_sets WHERE id=?", (qid,)).fetchone())
-    if not qs:
-        raise HTTPException(404, "Soru seti bulunamadı")
-    qs["builtin"] = bool(qs["builtin"])
-    qs["question_count"] = sum(len(sec["questions"]) for sec in qs["sections"])
-    return qs
+    return ts.get_template(db, qid)
 
 
 @app.get("/api/question-sets")
 def list_question_sets():
     with get_db() as db:
-        ids = [r[0] for r in db.execute("SELECT id FROM question_sets ORDER BY builtin DESC, CASE WHEN builtin=1 THEN id END, name COLLATE NOCASE")]
+        ids = [r[0] for r in db.execute(
+            "SELECT id FROM audit_templates ORDER BY builtin DESC, CASE WHEN builtin=1 THEN id END, name COLLATE NOCASE")]
         out = []
         for i in ids:
             qs = _get_set(db, i)
             qs["used_in"] = db.execute(
-                "SELECT COUNT(*) FROM audits WHERE set_names LIKE ?", (f'%"{qs["name"]}"%',)).fetchone()[0]
+                "SELECT COUNT(*) FROM audits WHERE EXISTS (SELECT 1 FROM json_each(audits.template_ids) WHERE value=?) "
+                "OR (template_ids IS NULL AND set_names LIKE ?)", (i, f'%"{qs["name"]}"%')).fetchone()[0]
             out.append(qs)
         return out
 
@@ -289,25 +270,22 @@ def get_question_set(qid: int):
 
 @app.post("/api/question-sets", status_code=201)
 def create_question_set(body: QuestionSetIn):
+    secs = normalize_sections(body.sections)
     with get_db() as db:
-        _check_name(db, body.name)
-        cur = db.execute(
-            "INSERT INTO question_sets (name, standard, description, builtin, sections) VALUES (?,?,?,0,?)",
-            (body.name.strip(), (body.standard or "Özel").strip(), body.description,
-             json.dumps(normalize_sections(body.sections), ensure_ascii=False)))
-        return _get_set(db, cur.lastrowid)
+        ts.check_name(db, body.name)
+        return _get_set(db, ts.create_template(db, body.name, body.standard, body.description, secs))
 
 
 @app.put("/api/question-sets/{qid}")
 def update_question_set(qid: int, body: QuestionSetIn):
+    secs = normalize_sections(body.sections)
     with get_db() as db:
         if _get_set(db, qid)["builtin"]:
             raise HTTPException(403, "Standart setler değiştirilemez; kopyalayıp düzenleyin.")
-        _check_name(db, body.name, qid)
-        db.execute(
-            "UPDATE question_sets SET name=?, standard=?, description=?, sections=?, updated_at=datetime('now') WHERE id=?",
-            (body.name.strip(), (body.standard or "Özel").strip(), body.description,
-             json.dumps(normalize_sections(body.sections), ensure_ascii=False), qid))
+        ts.check_name(db, body.name, qid)
+        db.execute("UPDATE audit_templates SET name=?, standard=?, description=?, updated_at=datetime('now') WHERE id=?",
+                   (body.name.strip(), (body.standard or "Özel").strip(), body.description, qid))
+        ts.write_questions(db, qid, secs)
         return _get_set(db, qid)
 
 
@@ -316,7 +294,7 @@ def delete_question_set(qid: int):
     with get_db() as db:
         if _get_set(db, qid)["builtin"]:
             raise HTTPException(403, "Standart setler silinemez.")
-        db.execute("DELETE FROM question_sets WHERE id=?", (qid,))
+        db.execute("DELETE FROM audit_templates WHERE id=?", (qid,))
 
 
 @app.post("/api/question-sets/{qid}/clone", status_code=201)
@@ -324,48 +302,38 @@ def clone_question_set(qid: int):
     with get_db() as db:
         qs = _get_set(db, qid)
         name, n = f"{qs['name']} (kopya)", 2
-        while db.execute("SELECT 1 FROM question_sets WHERE lower(name)=lower(?)", (name,)).fetchone():
+        while db.execute("SELECT 1 FROM audit_templates WHERE lower(name)=lower(?)", (name,)).fetchone():
             name, n = f"{qs['name']} (kopya {n})", n + 1
-        cur = db.execute(
-            "INSERT INTO question_sets (name, standard, description, builtin, sections) VALUES (?,?,?,0,?)",
-            (name, qs["standard"], qs["description"], json.dumps(qs["sections"], ensure_ascii=False)))
-        return _get_set(db, cur.lastrowid)
+        return _get_set(db, ts.create_template(db, name, qs["standard"], qs["description"], qs["sections"]))
 
 
-def _check_name(db, name: str, exclude_id: int | None = None):
-    r = db.execute("SELECT id FROM question_sets WHERE lower(name)=lower(?) AND id IS NOT ?", (name.strip(), exclude_id)).fetchone()
-    if r:
-        raise HTTPException(409, f"'{name.strip()}' adında bir soru seti zaten var; farklı bir ad seçin.")
+def _snapshot(sections: list[dict], prefix: str, source: str) -> list[dict]:
+    """Şablon bölümlerinin denetime özel kopyası: id'ler önekli, koşullar yeni id'lere çevrilmiş."""
+    return [{"id": prefix + sec["id"], "title": sec["title"], "weight": sec["weight"], "source": source,
+             "questions": [{"id": prefix + q["id"], "text": q["text"], "weight": q.get("weight", 1),
+                            "critical": bool(q.get("critical")), "condition": eng.prefix_condition(q.get("condition"), prefix)}
+                           for q in sec["questions"]]}
+            for sec in sections]
 
 
-def _build_checklist(db, body: "AuditIn") -> tuple[list[dict], list[str]]:
-    """Seçilen setlerin ve özel soruların anlık kopyasını oluşturur. Soru id'leri denetim içinde benzersizdir."""
-    sections, names = [], []
+def _build_checklist(db, body: "AuditIn") -> tuple[list[dict], list[str], list[int]]:
+    """Seçilen şablonların ve özel soruların anlık kopyası. Soru id'leri denetim içinde benzersizdir."""
+    sections, names, tids = [], [], []
     for qid in dict.fromkeys(body.question_set_ids):
         qs = _get_set(db, qid)
-        names.append(qs["name"])
-        for sec in qs["sections"]:
-            sections.append({
-                "id": f"q{qid}.{sec['id']}", "title": sec["title"], "weight": sec["weight"], "source": qs["name"],
-                "questions": [{"id": f"q{qid}.{q['id']}", "text": q["text"]} for q in sec["questions"]],
-            })
+        names.append(qs["name"]); tids.append(qid)
+        sections += _snapshot(qs["sections"], f"q{qid}.", qs["name"])
     if body.custom_sections:
         label = (body.save_custom_as or "").strip() or "Özel sorular"
         names.append(label)
-        for sec in normalize_sections(body.custom_sections):
-            sections.append({
-                "id": f"c.{sec['id']}", "title": sec["title"], "weight": sec["weight"], "source": label,
-                "questions": [{"id": f"c.{q['id']}", "text": q["text"]} for q in sec["questions"]],
-            })
+        custom = normalize_sections(body.custom_sections)
+        sections += _snapshot(custom, "c.", label)
         if body.save_custom_as and body.save_custom_as.strip():
-            _check_name(db, body.save_custom_as)
-            db.execute(
-                "INSERT INTO question_sets (name, standard, description, builtin, sections) VALUES (?,?,?,0,?)",
-                (label, "Özel", "Denetim planlanırken oluşturuldu.",
-                 json.dumps(normalize_sections(body.custom_sections), ensure_ascii=False)))
+            ts.check_name(db, body.save_custom_as)
+            tids.append(ts.create_template(db, label, "Özel", "Denetim planlanırken oluşturuldu.", custom))
     if not sections:
         raise HTTPException(422, "En az bir soru seti seçin veya özel soru ekleyin.")
-    return sections, names
+    return sections, names, tids
 
 
 # ============================================================ Tedarikçiler
@@ -443,13 +411,13 @@ def list_audits():
 def create_audit(sid: int, body: AuditIn):
     with get_db() as db:
         _get_supplier(db, sid)
-        sections, names = _build_checklist(db, body)
+        sections, names, tids = _build_checklist(db, body)
         d = body.model_dump()
         cur = db.execute(
-            "INSERT INTO audits (supplier_id, audit_date, auditor, audit_type, status, notes, checklist, set_names) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO audits (supplier_id, audit_date, auditor, audit_type, status, notes, checklist, set_names, template_ids) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (sid, d["audit_date"], d["auditor"], d["audit_type"], d["status"], d["notes"],
-             json.dumps(sections, ensure_ascii=False), json.dumps(names, ensure_ascii=False)))
+             json.dumps(sections, ensure_ascii=False), json.dumps(names, ensure_ascii=False), json.dumps(tids)))
         return get_audit(cur.lastrowid, db)
 
 
@@ -467,7 +435,7 @@ def get_audit(aid: int, db=None):
         if not a.get("checklist"):
             a["checklist"] = cl.legacy_sections()
             a["set_names"] = ["Genel Tedarikçi Denetimi"]
-        a["result"] = cl.compute_score({k: v["answer"] for k, v in a["answers"].items()}, a["checklist"])
+        a["result"] = eng.score_audit(a["checklist"], {k: v["answer"] for k, v in a["answers"].items() if v["answer"]})
         a["findings"] = rows(db.execute("SELECT * FROM findings WHERE audit_id=?", (aid,)).fetchall())
         return a
     if db is not None:
@@ -493,8 +461,15 @@ def update_audit(aid: int, body: AuditUpdate):
                     "ON CONFLICT(audit_id, question_id) DO UPDATE SET answer=excluded.answer, note=excluded.note",
                     (aid, qid, a.answer, a.note))
         a = get_audit(aid, db)
-        db.execute("UPDATE audits SET score=? WHERE id=?", (a["result"]["score"], aid))
-        a["score"] = a["result"]["score"]
+        r = a["result"]
+        completed = a["status"] == "tamamlandı" and current["status"] != "tamamlandı"
+        db.execute("UPDATE audits SET score=?, risk_level=?, decision=?, kill_switches=?, "
+                   "completed_at=CASE WHEN ? THEN datetime('now') WHEN status!='tamamlandı' THEN NULL ELSE completed_at END WHERE id=?",
+                   (r["score"], r["risk_level"], r["decision"], json.dumps(r["kill_switches"], ensure_ascii=False), int(completed), aid))
+        a.update(score=r["score"], risk_level=r["risk_level"], decision=r["decision"], kill_switches=r["kill_switches"])
+        if completed:
+            auth.log("audit.complete", "audit", aid, {"score": r["score"], "decision": r["decision"],
+                                                       "kill_switch": r["kill_switch"]}, db=db)
         return a
 
 
@@ -513,23 +488,23 @@ async def generate_audit_findings(aid: int):
     new_ids: list[int] = []
     with get_db() as db:
         a = get_audit(aid, db)
-        existing = {f["title"] for f in a["findings"]}
-        sec_title = {q["id"]: sec["title"] for sec in a["checklist"] for q in sec["questions"]}
-        q_text = {q["id"]: q["text"] for sec in a["checklist"] for q in sec["questions"]}
+        existing = {f["question_id"] or f["title"] for f in a["findings"]}
+        hidden = set(a["result"]["hidden_question_ids"])
+        qmeta = {q["id"]: (sec["title"], q) for sec in a["checklist"] for q in sec["questions"]}
         for qid, v in a["answers"].items():
-            if v["answer"] not in ("uygun değil", "kısmen"):
+            if v["answer"] not in ("uygun değil", "kısmen") or qid not in qmeta or qid in hidden:
                 continue
-            sev = "yüksek" if v["answer"] == "uygun değil" else "orta"
-            if qid not in q_text:
-                continue
-            title = f"[{sec_title[qid]}] {q_text[qid]}"
-            if title in existing:
+            sec_title, q = qmeta[qid]
+            sev = ("kritik" if q.get("critical") else "yüksek") if v["answer"] == "uygun değil" else "orta"
+            title = f"[{sec_title}] {q['text']}"
+            if qid in existing or title in existing:
                 continue
             new_ids.append(db.execute(
-                "INSERT INTO findings (supplier_id, audit_id, source, title, severity, description, due_date) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (a["supplier_id"], aid, "denetim", title, sev,
-                 f"Denetim cevabı: {v['answer']}" + (f"\nNot: {v['note']}" if v.get("note") else ""), due_for(sev))).lastrowid)
+                "INSERT INTO findings (supplier_id, audit_id, question_id, source, title, severity, description, due_date) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (a["supplier_id"], aid, qid, "denetim", title, sev,
+                 f"Denetim cevabı: {v['answer']}" + (" (kritik madde)" if q.get("critical") else "")
+                 + (f"\nNot: {v['note']}" if v.get("note") else ""), due_for(sev))).lastrowid)
             created += 1
         supplier_id = a["supplier_id"]
     sent = await notify.auto_notify(supplier_id, new_ids)

@@ -620,7 +620,7 @@ async function auditForm(supplierId, suppliers) {
       <div><label>Durum</label><select name="status"><option>planlandı</option><option>devam ediyor</option></select></div></div>
 
     <h3>Özel soru seti</h3>
-    <div class="small muted" style="margin-bottom:8px">Bu denetime özel sorular ekleyin. İsterseniz kütüphaneye kaydedip sonraki denetimlerde tekrar kullanabilirsiniz.</div>
+    <div class="small muted" style="margin-bottom:8px">Bu denetime özel sorular ekleyin (satır başına "!" yazarsanız soru <b>kritik</b> olur). İsterseniz kütüphaneye kaydedip sonraki denetimlerde tekrar kullanabilirsiniz; ağırlık ve koşulları Soru Setleri sayfasından ayarlayabilirsiniz.</div>
     <div id="sb"></div>
     <div id="saveRow" class="hidden" style="display:flex;gap:8px;align-items:center;margin-top:8px">
       <label style="display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap"><input type="checkbox" id="saveChk" style="width:auto"> Kütüphaneye kaydet:</label>
@@ -677,7 +677,7 @@ async function viewQuestionSets() {
         <div><a href="#/soru-seti/${x.id}"><b>${esc(x.name)}</b></a> <span class="badge ${x.builtin ? "" : "b-ok"}">${esc(x.standard || "Özel")}</span></div>
         ${x.builtin ? `<span class="small muted">Standart</span>` : ""}</div>
       <div class="small muted" style="margin:6px 0">${esc(x.description || "")}</div>
-      <div class="small">${x.sections.length} bölüm · <b>${x.question_count}</b> soru${x.used_in ? ` · ${x.used_in} denetimde kullanıldı` : ""}</div>
+      <div class="small">${x.sections.length} bölüm · <b>${x.question_count}</b> soru${x.critical_count ? ` · <span style="color:var(--crit)">${x.critical_count} kritik</span>` : ""}${x.conditional_count ? ` · ${x.conditional_count} koşullu` : ""}${x.used_in ? ` · ${x.used_in} denetimde kullanıldı` : ""}</div>
       <div class="actions" style="margin-top:10px"><a class="btn sm" href="#/soru-seti/${x.id}">${x.builtin ? "Görüntüle" : "Düzenle"}</a>
         <button class="sm" data-clone="${x.id}" data-perm="template:write">Kopyala</button></div></div>`;
   $app.innerHTML = `<div class="page-head"><div><h1>Soru Setleri</h1><div class="muted">Denetimlerde kullanılacak standart ve özel soru setleri</div></div>
@@ -693,6 +693,86 @@ async function viewQuestionSets() {
   }));
 }
 
+function templateEditor(root, sections) {
+  let seq = 0;
+  const newCode = () => `n${Date.now().toString(36)}${seq++}`;
+  const data = (sections.length ? sections : [{ title: "", weight: 10, questions: [{ text: "" }] }]).map((sec) => ({
+    title: sec.title, weight: sec.weight,
+    questions: sec.questions.map((q) => ({ code: q.id || q.code || newCode(), text: q.text, weight: q.weight || 1, critical: !!q.critical, condition: q.condition || null })),
+  }));
+  const ANS = ["uygun", "kısmen", "uygun değil", "na"];
+  const allQs = () => data.flatMap((s) => s.questions);
+  const draw = () => {
+    root.innerHTML = data.map((sec, i) => `<div class="sb-sec" data-s="${i}">
+      <div class="sb-head"><input class="sb-title" placeholder="Bölüm adı" value="${esc(sec.title)}">
+        <label class="sb-w">Bölüm ağırlığı <input class="sb-weight" type="number" min="1" value="${esc(sec.weight)}"></label>
+        <button type="button" class="sm danger" data-delsec="${i}" title="Bölümü sil">✕</button></div>
+      ${sec.questions.map((q, j) => {
+        const simple = !q.condition || (q.condition.q && ["in", "eq"].includes(q.condition.op || "eq"));
+        const sel = !q.condition ? [] : q.condition.op === "in" ? q.condition.value : [q.condition.value];
+        return `<div class="te-q" data-s="${i}" data-j="${j}">
+          <div class="te-row"><input class="te-text" placeholder="Soru metni" value="${esc(q.text)}">
+            <label class="te-small" title="Soru ağırlığı">× <input class="te-weight" type="number" min="0.1" step="0.5" value="${esc(q.weight)}"></label>
+            <label class="te-small te-crit" title="Uygun değil = denetim reddedilir"><input type="checkbox" class="te-critical" ${q.critical ? "checked" : ""}> kritik</label>
+            <button type="button" class="sm danger" data-delq="${i}.${j}">✕</button></div>
+          <div class="te-row small">${simple ? `<span class="muted">Görünürlük:</span>
+            <select class="te-parent"><option value="">Her zaman göster</option>${allQs().filter((p) => p.code !== q.code).map((p) => `<option value="${esc(p.code)}" ${q.condition?.q === p.code ? "selected" : ""}>${esc((p.text || "(adsız soru)").slice(0, 70))}</option>`).join("")}</select>
+            <span class="te-ans ${q.condition ? "" : "hidden"}">cevabı ${ANS.map((v) => `<label><input type="checkbox" value="${v}" ${sel.includes(v) ? "checked" : ""}> ${v}</label>`).join(" ")} ise</span>`
+            : `<span class="muted">Gelişmiş koşul (API ile tanımlanmış, korunur)</span> <button type="button" class="sm" data-clrcond="${i}.${j}">Koşulu kaldır</button>`}</div></div>`;
+      }).join("")}
+      <button type="button" class="sm" data-addq="${i}">+ Soru</button></div>`).join("") + `<button type="button" class="sm" id="te-addsec">+ Bölüm ekle</button>`;
+    root.querySelectorAll(".sb-sec").forEach((el) => {
+      const sec = data[+el.dataset.s];
+      el.querySelector(".sb-title").oninput = (e) => (sec.title = e.target.value);
+      el.querySelector(".sb-weight").oninput = (e) => (sec.weight = +e.target.value || 1);
+    });
+    root.querySelectorAll(".te-q").forEach((el) => {
+      const q = data[+el.dataset.s].questions[+el.dataset.j];
+      el.querySelector(".te-text").oninput = (e) => {
+        q.text = e.target.value; // koşul listelerindeki metni yerinde güncelle (yeniden çizmeden; odak kaybolmasın)
+        root.querySelectorAll(`.te-parent option[value="${CSS.escape(q.code)}"]`).forEach((o) => (o.textContent = (q.text || "(adsız soru)").slice(0, 70)));
+      };
+      el.querySelector(".te-weight").oninput = (e) => (q.weight = +e.target.value || 1);
+      el.querySelector(".te-critical").onchange = (e) => (q.critical = e.target.checked);
+      const par = el.querySelector(".te-parent");
+      if (par) {
+        const sync = () => {
+          const vals = [...el.querySelectorAll(".te-ans input:checked")].map((c) => c.value);
+          q.condition = par.value ? { q: par.value, op: "in", value: vals.length ? vals : ["uygun değil"] } : null;
+          if (par.value && !vals.length) el.querySelector('.te-ans input[value="uygun değil"]').checked = true;
+          el.querySelector(".te-ans").classList.toggle("hidden", !par.value);
+        };
+        par.onchange = sync;
+        el.querySelectorAll(".te-ans input").forEach((c) => (c.onchange = sync));
+      }
+    });
+    root.querySelectorAll("[data-addq]").forEach((b) => (b.onclick = () => { data[+b.dataset.addq].questions.push({ code: newCode(), text: "", weight: 1, critical: false, condition: null }); draw(); }));
+    root.querySelectorAll("[data-delq]").forEach((b) => (b.onclick = () => {
+      const [i, j] = b.dataset.delq.split(".").map(Number);
+      const code = data[i].questions[j].code;
+      data[i].questions.splice(j, 1);
+      allQs().forEach((q) => { if (q.condition && JSON.stringify(q.condition).includes(`"${code}"`)) q.condition = null; });
+      draw();
+    }));
+    root.querySelectorAll("[data-clrcond]").forEach((b) => (b.onclick = () => { const [i, j] = b.dataset.clrcond.split(".").map(Number); data[i].questions[j].condition = null; draw(); }));
+    root.querySelectorAll("[data-delsec]").forEach((b) => (b.onclick = () => { if (confirm("Bölüm ve soruları silinsin mi?")) { data.splice(+b.dataset.delsec, 1); draw(); } }));
+    root.querySelector("#te-addsec").onclick = () => { data.push({ title: "", weight: 10, questions: [{ code: newCode(), text: "", weight: 1, critical: false, condition: null }] }); draw(); };
+  };
+  draw();
+  return {
+    get: () => data.map((s) => ({ ...s, questions: s.questions.filter((q) => q.text.trim()) })).filter((s) => s.title.trim() || s.questions.length),
+    validate() {
+      for (const [i, x] of this.get().entries()) {
+        if (!x.title.trim()) return `${i + 1}. bölümün adı boş.`;
+        if (!x.questions.length) return `"${x.title}" bölümünde soru yok.`;
+      }
+      const codes = new Set(this.get().flatMap((s) => s.questions.map((q) => q.code)));
+      for (const q of this.get().flatMap((s) => s.questions)) if (q.condition?.q && !codes.has(q.condition.q)) return `"${q.text.slice(0, 40)}" sorusunun bağlı olduğu soru silinmiş.`;
+      return null;
+    },
+  };
+}
+
 async function viewQuestionSet(id) {
   const isNew = id === "yeni";
   const x = isNew ? { name: "", standard: "Özel", description: "", sections: [], builtin: false } : await api(`/api/question-sets/${id}`);
@@ -701,7 +781,9 @@ async function viewQuestionSet(id) {
     $app.innerHTML = `<div class="page-head"><div>${head}<h1>${esc(x.name)}</h1><div class="muted">${esc(x.description || "")}</div></div>
       <div class="actions"><button class="primary" id="clone">Kopyala ve düzenle</button></div></div>
       ${x.sections.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}</span></h2>
-        <ol style="margin:0;padding-left:20px">${sec.questions.map((q) => `<li style="margin-bottom:4px">${esc(q.text)}</li>`).join("")}</ol></div>`).join("")}`;
+        <ol style="margin:0;padding-left:20px">${sec.questions.map((q) => `<li style="margin-bottom:4px">${esc(q.text)}
+          ${q.critical ? `<span class="badge b-crit">kritik</span>` : ""}${(q.weight || 1) != 1 ? ` <span class="badge">×${num(q.weight)}</span>` : ""}
+          ${q.condition ? `<div class="small muted">↳ ${esc(condText(q.condition, Object.fromEntries(x.sections.flatMap((s2) => s2.questions.map((y) => [y.id, y.text])))))}</div>` : ""}</li>`).join("")}</ol></div>`).join("")}`;
     document.getElementById("clone").onclick = async () => {
       const c = await api(`/api/question-sets/${x.id}/clone`, { method: "POST" }); location.hash = `#/soru-seti/${c.id}`;
     };
@@ -713,8 +795,11 @@ async function viewQuestionSet(id) {
       <div><label>Set adı *</label><input id="n" value="${esc(x.name)}" placeholder="ör. Depo ve Lojistik Denetimi"></div>
       <div><label>Standart / etiket</label><input id="st" value="${esc(x.standard || "Özel")}" placeholder="ör. Özel, TISAX, SOC 2"></div></div>
       <div style="margin-top:12px"><label>Açıklama</label><textarea id="ds" style="min-height:50px">${esc(x.description || "")}</textarea></div></div>
-    <div class="card"><h2>Bölümler ve sorular</h2><div class="small muted" style="margin-bottom:10px">Her satır bir sorudur. Ağırlık, bölümün toplam puana etkisini belirler (ör. 30 ve 10 ağırlıklı iki bölümde ilki 3 kat etkilidir).</div><div id="sb"></div></div>`;
-  const sb = sectionBuilder(document.getElementById("sb"), x.sections.length ? x.sections : [{ title: "", weight: 10, questions: [] }]);
+    <div class="card"><h2>Bölümler ve sorular</h2><div class="small muted" style="margin-bottom:10px">
+      <b>Bölüm ağırlığı</b> bölümün toplam puana etkisini, <b>soru ağırlığı</b> sorunun bölüm içindeki etkisini belirler.
+      <b>Kritik</b> işaretli soruda "Uygun değil" cevabı denetimi puandan bağımsız reddeder (kill-switch).
+      <b>Koşul</b> ile bir soruyu yalnızca başka bir sorunun belirli cevaplarında gösterebilirsiniz (ör. sertifika yoksa alternatif kanıt sorusu).</div><div id="sb"></div></div>`;
+  const sb = templateEditor(document.getElementById("sb"), x.sections);
   document.getElementById("save").onclick = async () => {
     const body = { name: document.getElementById("n").value.trim(), standard: document.getElementById("st").value.trim() || "Özel",
       description: document.getElementById("ds").value.trim() || null, sections: sb.get() };
@@ -733,63 +818,143 @@ async function viewQuestionSet(id) {
   };
 }
 
+// ---------------------------------------------------------------- denetim kuralları (app/templates_engine.py ile aynı)
+const ENG = {
+  pts: { uygun: 1, kısmen: 0.5, "uygun değil": 0 },
+  evalCond(c, ans) {
+    if (!c) return true;
+    if (c.all) return c.all.every((x) => ENG.evalCond(x, ans));
+    if (c.any) return c.any.some((x) => ENG.evalCond(x, ans));
+    if (c.not) return !ENG.evalCond(c.not, ans);
+    const a = ans[c.q], op = c.op || "eq";
+    if (op === "answered") return a != null;
+    if (a == null) return false;
+    if (op === "eq") return a === c.value;
+    if (op === "neq") return a !== c.value;
+    if (op === "in") return (c.value || []).includes(a);
+    return false;
+  },
+  visible(sections, answers) {
+    const qs = sections.flatMap((s) => s.questions);
+    let vis = new Set(qs.map((q) => q.id));
+    for (let i = 0; i <= qs.length; i++) {
+      const eff = {}; for (const [k, v] of Object.entries(answers)) if (vis.has(k) && v) eff[k] = v;
+      const nxt = new Set(qs.filter((q) => ENG.evalCond(q.condition, eff)).map((q) => q.id));
+      if (nxt.size === vis.size && [...nxt].every((x) => vis.has(x))) break;
+      vis = nxt;
+    }
+    return vis;
+  },
+  score(sections, answers) {
+    const vis = ENG.visible(sections, answers);
+    let tot = 0, tw = 0, answered = 0, total = 0; const kills = [];
+    const secs = sections.map((sec) => {
+      let n = 0, d = 0;
+      for (const q of sec.questions) {
+        if (!vis.has(q.id)) continue;
+        total++; const a = answers[q.id];
+        if (a) answered++;
+        if (q.critical && a === "uygun değil") kills.push(q);
+        if (a in ENG.pts) { const w = +(q.weight || 1); n += ENG.pts[a] * w; d += w; }
+      }
+      const pct = d ? (100 * n) / d : null;
+      if (pct != null) { tot += pct * (+sec.weight || 1); tw += +sec.weight || 1; }
+      return { title: sec.title, pct };
+    });
+    const score = tw ? Math.round((tot / tw) * 10) / 10 : null;
+    let decision = score == null ? null : score >= 85 ? "approved" : score >= 70 ? "conditional" : score >= 50 ? "improvement_required" : "rejected";
+    if (kills.length) decision = "rejected";
+    return { score, decision, kills, secs, answered, total, vis };
+  },
+};
+const DECISION = { approved: ["b-ok", "Onaylı"], conditional: ["b-warn", "Şartlı Onaylı"], improvement_required: ["b-bad", "Gelişim Gerekli"], rejected: ["b-crit", "Reddedildi"] };
+const decisionBadge = (d) => (d ? `<span class="badge ${DECISION[d][0]}">${DECISION[d][1]}</span>` : "");
+
+// Alt soruları üst sorularının hemen altına diz (görünüm sırası)
+function displayOrder(questions) {
+  const ids = new Set(questions.map((q) => q.id)), kids = {}, roots = [];
+  for (const q of questions) {
+    const p = q.condition?.q;
+    if (p && ids.has(p) && p !== q.id) (kids[p] ||= []).push(q); else roots.push(q);
+  }
+  const out = [], seen = new Set();
+  const walk = (q, depth) => { if (seen.has(q.id)) return; seen.add(q.id); out.push([q, depth]); (kids[q.id] || []).forEach((k) => walk(k, depth + 1)); };
+  roots.forEach((q) => walk(q, 0));
+  questions.forEach((q) => walk(q, 1)); // döngü/eksik ebeveyn güvenliği
+  return out;
+}
+const condText = (c, qtext) => {
+  if (!c) return "";
+  if (c.all || c.any) return "birden çok koşul";
+  if (c.not) return "koşul";
+  const t = (qtext[c.q] || "önceki soru").slice(0, 50);
+  const v = c.op === "answered" ? "cevaplanırsa" : c.op === "in" ? `"${c.value.join(" / ")}" ise` : c.op === "neq" ? `"${c.value}" değilse` : `"${c.value}" ise`;
+  return `"${t}…" ${v} görünür`;
+};
+
 async function viewAudit(id) {
   const a = await api(`/api/audits/${id}`);
-  const answers = { ...a.answers };
+  const answers = Object.fromEntries(Object.entries(a.answers).map(([k, v]) => [k, v.answer]));
+  const notes = Object.fromEntries(Object.entries(a.answers).map(([k, v]) => [k, v.note || ""]));
+  const ro = !can("audit:write");
+  const qtext = Object.fromEntries(a.checklist.flatMap((s) => s.questions.map((q) => [q.id, q.text])));
   const opts = [["uygun", "Uygun"], ["kısmen", "Kısmen"], ["uygun değil", "Uygun değil"], ["na", "N/A"]];
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikci/${a.supplier_id}/denetimler">← ${esc(a.supplier_name)}</a></div>
-    <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")}</div>
+    <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")} · ${statusBadge(a.status)}</div>
     <div class="chips" style="margin-top:6px">${(a.set_names || []).map((n) => `<span class="badge">${esc(n)}</span>`).join("")}</div></div>
-    <div class="actions" data-perm="audit:write"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></div></div>
+    <div class="actions"><a class="btn" data-perm="report:read" href="/api/reports/audits/${a.id}.pdf" target="_blank">PDF</a><a class="btn" data-perm="report:read" href="/api/reports/audits/${a.id}.csv">CSV</a>
+      <span class="actions" data-perm="audit:write"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></span></div></div>
+  <div class="small muted" style="margin:-8px 0 12px"><span class="badge b-crit">kritik</span> işaretli maddede "Uygun değil" cevabı, puandan bağımsız olarak denetimi <b>reddeder</b> (kill-switch). ↳ işaretli sorular yalnızca bağlı oldukları sorunun cevabına göre açılır.</div>
   <div class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start" id="lay">
     <div>${a.checklist.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}${(a.set_names || []).length > 1 && sec.source ? " · " + esc(sec.source) : ""}</span></h2>
-      ${sec.questions.map((q) => `<div class="q" data-q="${q.id}"><div>${esc(q.text)}</div>
-        <div class="seg">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${answers[q.id]?.answer === v ? "on" : ""}">${l}</button>`).join("")}</div>
-        <input class="note" placeholder="Not / kanıt" value="${esc(answers[q.id]?.note || "")}"></div>`).join("")}</div>`).join("")}</div>
+      ${displayOrder(sec.questions).map(([q, depth]) => `<div class="q ${depth ? "q-child" : ""}" data-q="${esc(q.id)}" style="${depth ? `margin-left:${Math.min(depth, 3) * 18}px` : ""}">
+        <div>${depth ? `<span class="muted">↳ </span>` : ""}${esc(q.text)} ${q.critical ? `<span class="badge b-crit" title="Uygun değil = denetim reddedilir">kritik</span>` : ""}${(q.weight || 1) != 1 ? ` <span class="badge" title="Soru ağırlığı">×${num(q.weight)}</span>` : ""}
+          ${q.condition ? `<div class="small muted">${esc(condText(q.condition, qtext))}</div>` : ""}</div>
+        <div class="seg">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${answers[q.id] === v ? "on" : ""}" ${ro ? "disabled" : ""}>${l}</button>`).join("")}</div>
+        <input class="note" placeholder="Not / kanıt" value="${esc(notes[q.id] || "")}" ${ro ? "readonly" : ""}>
+        <div class="ev-slot" data-ev="${esc(q.id)}"></div></div>`).join("")}</div>`).join("")}</div>
     <div style="position:sticky;top:72px;max-height:calc(100vh - 88px);overflow-y:auto">
       <div class="card"><h2>Sonuç</h2><div id="res"></div></div>
-      <div class="card"><label>Durum</label><select id="st">${["planlandı", "devam ediyor", "tamamlandı"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>
-        <label style="margin-top:10px">Genel notlar</label><textarea id="nt">${esc(a.notes || "")}</textarea>
-        <div class="small muted" style="margin-top:8px">Pano ve risk hesaplarında yalnızca <b>tamamlandı</b> durumundaki denetimler kullanılır.</div></div>
+      <div class="card"><label>Durum</label><select id="st" ${ro ? "disabled" : ""}>${["planlandı", "devam ediyor", "tamamlandı"].map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <label style="margin-top:10px">Genel notlar</label><textarea id="nt" ${ro ? "readonly" : ""}>${esc(a.notes || "")}</textarea>
+        <div class="small muted" style="margin-top:8px">Denetim <b>tamamlandı</b> olarak kaydedildiğinde uygunsuzluklar için CAPA kayıtları otomatik açılır.</div></div>
+      <div id="sidecards"></div>
       ${a.findings.length ? `<div class="card"><h2>Bu denetimden bulgular</h2>${a.findings.map((f) => `<div class="small" style="margin-bottom:6px">${sevBadge(f.severity)} ${statusBadge(f.status)} ${esc(f.title)}</div>`).join("")}</div>` : ""}
     </div></div>`;
   if (window.innerWidth < 900) document.getElementById("lay").style.gridTemplateColumns = "1fr";
 
   const calc = () => {
-    // istemci tarafı canlı önizleme (sunucu ile aynı formül)
-    const pts = { uygun: 1, kısmen: 0.5, "uygun değil": 0 };
-    let tot = 0, tw = 0, answered = 0, total = 0;
-    const secs = a.checklist.map((sec) => {
-      const p = sec.questions.map((q) => answers[q.id]?.answer).filter((x) => x in pts).map((x) => pts[x]);
-      total += sec.questions.length; answered += sec.questions.filter((q) => answers[q.id]?.answer).length;
-      const pct = p.length ? (100 * p.reduce((x, y) => x + y, 0)) / p.length : null;
-      if (pct != null) { tot += pct * sec.weight; tw += sec.weight; }
-      return { title: sec.title, pct };
-    });
-    const score = tw ? Math.round((tot / tw) * 10) / 10 : null;
-    const rating = score == null ? null : score >= 85 ? "Onaylı" : score >= 70 ? "Şartlı Onaylı" : score >= 50 ? "Gelişim Gerekli" : "Onaysız";
-    document.getElementById("res").innerHTML = `<div style="font-size:36px;font-weight:800;color:${scoreColor(score)}">${num(score)}</div>
-      <div>${ratingBadge(rating)}</div><div class="small muted" style="margin:6px 0 10px">${answered}/${total} soru cevaplandı</div>
-      ${secs.map((x) => `<div class="small" style="margin-bottom:6px">${esc(x.title)}${meter(x.pct == null ? null : Math.round(x.pct))}</div>`).join("")}`;
+    const r = ENG.score(a.checklist, answers);
+    $app.querySelectorAll(".q[data-q]").forEach((el) => el.classList.toggle("hidden", !r.vis.has(el.dataset.q)));
+    document.getElementById("res").innerHTML = `<div style="font-size:36px;font-weight:800;color:${r.kills.length ? "var(--crit)" : scoreColor(r.score)}">${num(r.score)}</div>
+      <div>${decisionBadge(r.decision)}</div>
+      ${r.kills.length ? `<div class="small" style="margin-top:8px;color:var(--crit)"><b>Kill-switch:</b> ${r.kills.length} kritik madde uygun değil — puandan bağımsız olarak reddedildi.<ul style="margin:4px 0 0;padding-left:18px">${r.kills.map((q) => `<li>${esc(q.text)}</li>`).join("")}</ul></div>` : ""}
+      <div class="small muted" style="margin:6px 0 10px">${r.answered}/${r.total} görünür soru cevaplandı</div>
+      ${r.secs.map((x) => `<div class="small" style="margin-bottom:6px">${esc(x.title)}${meter(x.pct == null ? null : Math.round(x.pct))}</div>`).join("")}`;
   };
   calc();
 
-  $app.querySelectorAll(".q").forEach((el) => {
+  $app.querySelectorAll(".q[data-q]").forEach((el) => {
     const q = el.dataset.q;
     el.querySelectorAll(".seg button").forEach((b) => (b.onclick = () => {
-      const v = answers[q]?.answer === b.dataset.v ? null : b.dataset.v;
-      answers[q] = { ...(answers[q] || {}), answer: v };
+      const v = answers[q] === b.dataset.v ? null : b.dataset.v;
+      answers[q] = v;
       el.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("on", x.dataset.v === v));
       calc();
     }));
-    el.querySelector(".note").oninput = (e) => (answers[q] = { ...(answers[q] || {}), note: e.target.value });
+    el.querySelector(".note").oninput = (e) => (notes[q] = e.target.value);
   });
+  if (typeof auditExtras === "function") auditExtras(a);
+  if (ro) return;
 
   const save = async () => {
-    await api(`/api/audits/${id}`, { method: "PUT", body: { status: document.getElementById("st").value, notes: document.getElementById("nt").value, answers } });
+    const body = Object.fromEntries([...new Set([...Object.keys(answers), ...Object.keys(notes)])].map((k) => [k, { answer: answers[k] || null, note: notes[k] || null }]));
+    return api(`/api/audits/${id}`, { method: "PUT", body: { status: document.getElementById("st").value, notes: document.getElementById("nt").value, answers: body } });
   };
-  document.getElementById("save").onclick = async () => { try { await save(); toast("Denetim kaydedildi"); } catch (e) { toast(e.message); } };
+  document.getElementById("save").onclick = async () => {
+    try { const r = await save(); toast(r.capa_created ? `Denetim kaydedildi. ${r.capa_created} CAPA kaydı açıldı.` : "Denetim kaydedildi"); if (r.capa_created) router(); } catch (e) { toast(e.message); }
+  };
   document.getElementById("gen").onclick = async () => {
     try { await save(); const r = await api(`/api/audits/${id}/generate-findings`, { method: "POST" }); toast(`${r.created} bulgu oluşturuldu`); router(); }
     catch (e) { toast(e.message); }

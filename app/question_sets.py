@@ -10,8 +10,21 @@ from .checklist import CHECKLIST
 
 
 def _s(id, title, weight, *questions):
-    return {"id": id, "title": title, "weight": weight,
-            "questions": [{"id": f"{id}.{i}", "text": q} for i, q in enumerate(questions, 1)]}
+    """Soru: "metin" veya ("metin", {critical, weight, condition, code}). Kod varsayılanı: <bölüm>.<sıra>"""
+    out = []
+    for i, q in enumerate(questions, 1):
+        text, opts = (q, {}) if isinstance(q, str) else q
+        out.append({"code": opts.get("code", f"{id}.{i}"), "text": text, "weight": opts.get("weight", 1),
+                    "critical": opts.get("critical", False), "condition": opts.get("condition")})
+    return {"id": id, "title": title, "weight": weight, "questions": out}
+
+
+KRITIK = {"critical": True}
+
+
+def eger(code, *answers):
+    """Alt soru: <code> sorusunun cevabı verilenlerden biriyse göster."""
+    return {"q": code, "op": "in", "value": list(answers)}
 
 
 GENEL = {
@@ -21,7 +34,11 @@ GENEL = {
     "description": "Kalite, İSG, çevre, bilgi güvenliği, KVKK, süreklilik ve etik konularını kapsayan genel değerlendirme.",
     "sections": [
         {"id": sec["id"], "title": sec["title"], "weight": sec["weight"],
-         "questions": [{"id": q, "text": t} for q, t in sec["questions"]]}
+         "questions": [{"code": q, "text": t, "critical": q == "etik.2"} for q, t in sec["questions"]]
+         + ([{"code": "kalite.1a", "text": "Sertifika yoksa: belgelenmiş kalite el kitabı, prosedürler ve kayıtlar mevcut mu?",
+              "condition": eger("kalite.1", "kısmen", "uygun değil")}] if sec["id"] == "kalite" else [])
+         + ([{"code": "bg.1a", "text": "Sertifika/politika yoksa: son 12 ayda bağımsız güvenlik değerlendirmesi (SOC 2, sızma testi) yapılmış mı?",
+              "condition": eger("bg.1", "kısmen", "uygun değil")}] if sec["id"] == "bg" else [])}
         for sec in CHECKLIST
     ],
 }
@@ -34,6 +51,8 @@ PCI_DSS = {
     "sections": [
         _s("kapsam", "Kapsam ve Uyum Kanıtı", 10,
            "Güncel bir PCI DSS Uyum Beyanı (AOC) veya QSA raporu (ROC) sunuldu mu?",
+           ("AOC/ROC yoksa: imzalı ve güncel bir öz değerlendirme anketi (SAQ) sunuldu mu?",
+            {"code": "kapsam.1a", "condition": eger("kapsam.1", "kısmen", "uygun değil")}),
            "Kart verisi ortamının (CDE) kapsamı ve veri akış diyagramı belgelenmiş mi?",
            "Sorumluluk matrisi (tedarikçi / müşteri hangi gereksinimden sorumlu) yazılı olarak tanımlı mı? (12.8.5, 12.9)"),
         _s("r1", "Gereksinim 1 — Ağ Güvenliği Kontrolleri", 8,
@@ -44,7 +63,7 @@ PCI_DSS = {
            "Varsayılan parolalar ve gereksiz servisler/hesaplar kaldırılıyor mu? (2.2.2, 2.2.4)",
            "Sistemler için sıkılaştırma (hardening) standartları uygulanıyor mu? (2.2.1)"),
         _s("r3", "Gereksinim 3 — Saklanan Hesap Verisinin Korunması", 10,
-           "Hassas kimlik doğrulama verisi (CVV, PIN, tam iz verisi) yetkilendirme sonrası saklanmıyor mu? (3.3)",
+           ("Hassas kimlik doğrulama verisi (CVV, PIN, tam iz verisi) yetkilendirme sonrası saklanmıyor mu? (3.3)", KRITIK),
            "PAN saklanıyorsa okunamaz hale getiriliyor mu (şifreleme, tokenizasyon, hash)? (3.5)",
            "PAN ekranlarda maskeleniyor mu? (3.4)",
            "Şifreleme anahtarları için anahtar yönetimi prosedürleri var mı? (3.6, 3.7)",
@@ -65,7 +84,7 @@ PCI_DSS = {
            "Kullanıcı hesapları ve yetkileri en az 6 ayda bir gözden geçiriliyor mu? (7.2.4)"),
         _s("r8", "Gereksinim 8 — Kimlik Tanımlama ve Doğrulama", 8,
            "Her kullanıcının benzersiz bir kimliği var mı, paylaşılan hesap kullanılmıyor mu? (8.2)",
-           "CDE'ye tüm erişimlerde çok faktörlü kimlik doğrulama (MFA) kullanılıyor mu? (8.4)",
+           ("CDE'ye tüm erişimlerde çok faktörlü kimlik doğrulama (MFA) kullanılıyor mu? (8.4)", {"critical": True, "weight": 2}),
            "Parola politikası (en az 12 karakter, kilitleme) uygulanıyor mu? (8.3)",
            "İşten ayrılanların erişimleri derhal kaldırılıyor mu? (8.2.5)"),
         _s("r9", "Gereksinim 9 — Fiziksel Erişim", 5,
@@ -99,6 +118,8 @@ ISO27001 = {
     "sections": [
         _s("bgys", "BGYS Gereklilikleri (Madde 4–10)", 20,
            "Geçerli ISO 27001 sertifikası var mı, kapsamı sunulan hizmetleri içeriyor mu?",
+           ("Sertifika yoksa: son 12 ayda bağımsız bir güvenlik değerlendirmesi (SOC 2 raporu, sızma testi) sunuldu mu?",
+            {"code": "bgys.1a", "condition": eger("bgys.1", "kısmen", "uygun değil")}),
            "Uygulanabilirlik Bildirgesi (SoA) güncel mi?",
            "Bilgi güvenliği risk değerlendirmesi ve risk işleme planı mevcut mu? (6.1)",
            "Bilgi güvenliği hedefleri belirlenmiş ve izleniyor mu? (6.2)",
@@ -131,7 +152,7 @@ ISO27001 = {
            "Kötü amaçlı yazılıma karşı koruma mevcut mu? (A.8.7)",
            "Teknik zafiyet yönetimi ve yama süreci işletiliyor mu? (A.8.8)",
            "Yapılandırma yönetimi uygulanıyor mu? (A.8.9)",
-           "Yedekleme yapılıyor ve geri yükleme test ediliyor mu? (A.8.13)",
+           ("Yedekleme yapılıyor ve geri yükleme test ediliyor mu? (A.8.13)", {"weight": 2}),
            "Loglama ve izleme yapılıyor mu? (A.8.15, A.8.16)",
            "Ağ güvenliği ve ağ ayrıştırması sağlanmış mı? (A.8.20, A.8.22)",
            "Kriptografi kullanımı ve anahtar yönetimi tanımlı mı? (A.8.24)",
@@ -216,7 +237,7 @@ ISO45001 = {
            "İSG politikası yayımlanmış mı? (5.2)",
            "Çalışanların danışma ve katılımı sağlanıyor mu (İSG kurulu vb.)? (5.4)"),
         _s("risk", "Tehlike Tanımlama ve Risk Değerlendirmesi", 30,
-           "Tehlikeler tanımlanmış ve risk değerlendirmesi güncel mi? (6.1.2)",
+           ("Tehlikeler tanımlanmış ve risk değerlendirmesi güncel mi? (6.1.2)", {"critical": True, "weight": 2}),
            "Yasal İSG yükümlülükleri (iş güvenliği uzmanı, işyeri hekimi) karşılanıyor mu? (6.1.3)",
            "Kontrol hiyerarşisine göre önlemler alınmış mı? (8.1.2)"),
         _s("operasyon", "Operasyonel Kontrol", 30,
@@ -239,10 +260,12 @@ KVKK = {
     "description": "6698 sayılı KVKK kapsamında kişisel veri işleyen tedarikçiler için idari ve teknik tedbirler.",
     "sections": [
         _s("hukuki", "Hukuki Yükümlülükler", 35,
-           "Veri işleyen sözleşmesi imzalanmış ve işleme amacı/kapsamı tanımlı mı?",
+           ("Veri işleyen sözleşmesi imzalanmış ve işleme amacı/kapsamı tanımlı mı?", KRITIK),
            "Kişisel veri işleme envanteri hazırlanmış mı?",
            "VERBİS kaydı (yükümlü ise) yapılmış mı?",
            "Yurt dışına veri aktarımı varsa yasal dayanağı (standart sözleşme vb.) mevcut mu?",
+           ("Yasal dayanak yoksa: aktarım durdurulmuş veya Kurul'a bildirim yapılmış mı?",
+            {"code": "hukuki.4a", "condition": eger("hukuki.4", "kısmen", "uygun değil")}),
            "Saklama ve imha politikası uygulanıyor mu?",
            "Alt veri işleyenler kullanılıyorsa onay alınmış ve sözleşmeyle bağlanmış mı?"),
         _s("idari", "İdari Tedbirler", 25,

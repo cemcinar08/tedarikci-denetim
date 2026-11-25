@@ -143,6 +143,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-wea
 .qs-card { margin-bottom: 0; display: flex; flex-direction: column; }
 .qs-card .actions { margin-top: auto !important; padding-top: 10px; }
 #saveRow.hidden { display: none !important; }
+.te-q { border-top: 1px dashed var(--border); padding: 8px 0; }
+.te-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.te-text { flex: 1; min-width: 240px; }
+.te-small { display: flex; gap: 4px; align-items: center; margin: 0; white-space: nowrap; color: var(--text); font-weight: 400; }
+.te-small input[type=number] { width: 64px; }
+.te-small input[type=checkbox], .te-ans input { width: auto; }
+.te-crit { color: var(--crit); font-weight: 600; }
+.te-parent { width: auto; max-width: 420px; }
+.te-ans label { display: inline; margin: 0 4px; color: var(--text); font-weight: 400; }
 
 /* Yazdırma (rapor) */
 @media print {

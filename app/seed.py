@@ -24,7 +24,7 @@ def main():
         if db.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0]:
             print("Veritabanında zaten kayıt var; örnek veri yüklenmedi.")
             return
-        set_ids = {r["key"]: r["id"] for r in db.execute("SELECT id, key FROM question_sets WHERE key IS NOT NULL")}
+        set_ids = {r["key"]: r["id"] for r in db.execute("SELECT id, key FROM audit_templates WHERE key IS NOT NULL")}
 
     for i, (name, cat, country, crit, domains, keys) in enumerate(SUPPLIERS):
         s = m.create_supplier(m.SupplierIn(name=name, category=cat, country=country, criticality=crit, domains=domains,

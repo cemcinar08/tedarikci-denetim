@@ -49,6 +49,34 @@ CREATE TABLE IF NOT EXISTS question_sets (
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Dinamik denetim şablonları (eski question_sets tablosunun yerini alır; o tablo yalnızca geçiş için durur)
+CREATE TABLE IF NOT EXISTS audit_templates (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    key          TEXT UNIQUE,                 -- yerleşik şablonlar için sabit anahtar
+    name         TEXT NOT NULL,
+    standard     TEXT,
+    description  TEXT,
+    builtin      INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_questions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id     INTEGER NOT NULL REFERENCES audit_templates(id) ON DELETE CASCADE,
+    section_code    TEXT NOT NULL,
+    section_title   TEXT NOT NULL,
+    section_weight  REAL NOT NULL DEFAULT 10,
+    code            TEXT NOT NULL,            -- şablon içi soru kimliği (koşullar buna başvurur)
+    text            TEXT NOT NULL,
+    weight          REAL NOT NULL DEFAULT 1,
+    is_critical     INTEGER NOT NULL DEFAULT 0, -- kill-switch: "uygun değil" -> doğrudan reddedilir
+    condition_json  TEXT,                     -- görünürlük koşulu (templates_engine.py)
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (template_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_questions_template ON audit_questions(template_id, sort_order);
+
 CREATE TABLE IF NOT EXISTS audit_answers (
     audit_id     INTEGER NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
     question_id  TEXT NOT NULL,
@@ -188,7 +216,8 @@ CREATE INDEX IF NOT EXISTS idx_scans_supplier ON intel_scans(supplier_id, domain
 
 
 MIGRATIONS = {
-    "audits": {"checklist": "TEXT", "set_names": "TEXT"},
+    "audits": {"checklist": "TEXT", "set_names": "TEXT", "template_ids": "TEXT",
+               "risk_level": "TEXT", "decision": "TEXT", "kill_switches": "TEXT", "completed_at": "TEXT"},
     "suppliers": {
         "tier_id": "INTEGER REFERENCES supplier_tiers(id) ON DELETE SET NULL",
         "notify_emails": "TEXT",                 # virgülle ayrılmış alıcılar
@@ -197,6 +226,7 @@ MIGRATIONS = {
         "auto_notify": "INTEGER NOT NULL DEFAULT 0",
     },
     "findings": {
+        "question_id": "TEXT",                   # denetimdeki soru (denetim kaynaklı bulgular)
         "supplier_status": "TEXT",               # bildirildi / okundu / aksiyon planlandı / giderildi / itiraz
         "supplier_comment": "TEXT",
         "supplier_due_date": "TEXT",
@@ -225,7 +255,6 @@ def get_db():
 
 
 def init_db() -> None:
-    from .question_sets import BUILTIN_SETS
     with get_db() as db:
         db.executescript(SCHEMA)
         # Eski veritabanları için sütun ekleme (geçiş)
@@ -236,14 +265,8 @@ def init_db() -> None:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         from .auth import seed_auth
         seed_auth(db)
-        # Yerleşik soru setlerini yükle / güncelle
-        for qs in BUILTIN_SETS:
-            db.execute(
-                """INSERT INTO question_sets (key, name, standard, description, builtin, sections)
-                   VALUES (?,?,?,?,1,?)
-                   ON CONFLICT(key) DO UPDATE SET name=excluded.name, standard=excluded.standard,
-                     description=excluded.description, sections=excluded.sections, builtin=1""",
-                (qs["key"], qs["name"], qs["standard"], qs["description"], json.dumps(qs["sections"], ensure_ascii=False)))
+        from .template_store import sync_templates
+        sync_templates(db)
 
 
 def row(r):
@@ -252,7 +275,7 @@ def row(r):
     d = dict(r)
     if "domains" in d and isinstance(d["domains"], str):
         d["domains"] = json.loads(d["domains"] or "[]")
-    for k in ("sections", "checklist", "set_names", "detail", "permissions", "condition_json", "kill_switches"):
+    for k in ("sections", "checklist", "set_names", "template_ids", "detail", "permissions", "condition_json", "kill_switches"):
         if k in d and isinstance(d[k], str):
             try:
                 d[k] = json.loads(d[k])
