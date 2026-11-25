@@ -9,15 +9,19 @@
 <body>
   <header class="topbar">
     <div class="brand">Tedarikçi<span>Denetim</span></div>
-    <nav id="nav">
-      <a href="#/" data-route="">Pano</a>
-      <a href="#/tedarikciler" data-route="tedarikciler">Tedarikçiler</a>
-      <a href="#/denetimler" data-route="denetimler">Denetimler</a>
-      <a href="#/soru-setleri" data-route="soru-setleri">Soru Setleri</a>
-      <a href="#/bulgular" data-route="bulgular">Bulgular &amp; Aksiyonlar</a>
-      <a href="#/istihbarat" data-route="istihbarat">Dış İstihbarat</a>
-      <a href="#/ayarlar" data-route="ayarlar">Ayarlar</a>
+    <nav id="nav" class="hidden">
+      <a href="#/" data-route="" data-perm="summary:read">Pano</a>
+      <a href="#/tedarikciler" data-route="tedarikciler" data-perm="supplier:read" data-hide-role="supplier">Tedarikçiler</a>
+      <a href="#/denetimler" data-route="denetimler" data-perm="audit:read">Denetimler</a>
+      <a href="#/soru-setleri" data-route="soru-setleri" data-perm="template:read">Soru Setleri</a>
+      <a href="#/bulgular" data-route="bulgular" data-perm="finding:read">Bulgular</a>
+      <a href="#/capa" data-route="capa" data-perm="capa:read">CAPA</a>
+      <a href="#/istihbarat" data-route="istihbarat" data-perm="intel:scan">Dış İstihbarat</a>
+      <a href="#/kullanicilar" data-route="kullanicilar" data-perm="user:manage">Kullanıcılar</a>
+      <a href="#/kayitlar" data-route="kayitlar" data-perm="auditlog:read">İşlem Kayıtları</a>
+      <a href="#/ayarlar" data-route="ayarlar" data-perm="settings:manage">Ayarlar</a>
     </nav>
+    <div id="usermenu" class="usermenu hidden"></div>
   </header>
   <main id="app"><p class="muted">Yükleniyor…</p></main>
   <div id="modal" class="modal hidden"><div class="modal-box" id="modal-box"></div></div>

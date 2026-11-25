@@ -93,6 +93,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr("app.db.DB_PATH", tmp_path / "t.db")
     from app.main import app
     with TestClient(app) as c:
+        r = c.post("/api/auth/setup", json={"name": "Admin", "email": "admin@test.com", "password": "parola1234"})
+        assert r.status_code == 200, r.text
         yield c
 
 
@@ -238,6 +240,7 @@ def test_legacy_db_migration(tmp_path, monkeypatch):
     monkeypatch.setattr("app.db.DB_PATH", path)
     from app.main import app
     with TestClient(app) as c:
+        c.post("/api/auth/setup", json={"name": "Admin", "email": "admin@test.com", "password": "parola1234"})
         a = c.get("/api/audits/1").json()
         assert a["set_names"] == ["Genel Tedarikçi Denetimi"] and a["answers"]["kalite.1"]["answer"] == "uygun değil"
         assert a["result"]["score"] == 0

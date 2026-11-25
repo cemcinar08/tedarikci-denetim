@@ -4,6 +4,9 @@
 const $app = document.getElementById("app");
 let META = null;
 let SETTINGS = null;
+let ME = null;
+const can = (perm) => !!ME && (ME.permissions.includes("*") || ME.permissions.includes(perm));
+const isSupplier = () => ME?.role === "supplier";
 
 // ---------------------------------------------------------------- yardımcılar
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -19,6 +22,7 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (res.status === 204) return null;
+  if (res.status === 401 && !path.startsWith("/api/auth/")) { ME = null; showLogin(); throw new Error("Oturum sona erdi, lütfen tekrar giriş yapın."); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     let msg = data.detail;
@@ -89,6 +93,8 @@ const routes = [
   [/^#\/soru-setleri$/, viewQuestionSets],
   [/^#\/soru-seti\/(\d+|yeni)$/, viewQuestionSet],
   [/^#\/ayarlar$/, viewSettings],
+  [/^#\/kullanicilar$/, viewUsers],
+  [/^#\/kayitlar$/, viewAuditLogs],
 ];
 
 async function router() {
@@ -103,6 +109,7 @@ async function router() {
       try {
         if (!META) META = await api("/api/meta");
         await fn(...m.slice(1));
+        applyPerms($app);
       } catch (e) {
         $app.innerHTML = `<div class="card"><b>Hata:</b> ${esc(e.message)}</div>`;
       }
@@ -112,8 +119,71 @@ async function router() {
   }
   $app.innerHTML = `<div class="empty">Sayfa bulunamadı.</div>`;
 }
-window.addEventListener("hashchange", router);
-router();
+window.addEventListener("hashchange", () => ME && router());
+
+// Yetkisi olmayan öğeleri gizle: data-perm="izin" / data-hide-role="rol"
+function applyPerms(root = document) {
+  root.querySelectorAll("[data-perm]").forEach((el) => el.classList.toggle("hidden", !can(el.dataset.perm)));
+  root.querySelectorAll("[data-hide-role]").forEach((el) => { if (ME && el.dataset.hideRole === ME.role) el.classList.add("hidden"); });
+}
+
+async function boot() {
+  const st = await api("/api/auth/status");
+  if (st.setup_required) return showSetup();
+  if (!st.user) return showLogin();
+  ME = await api("/api/me");
+  document.getElementById("nav").classList.remove("hidden");
+  const um = document.getElementById("usermenu");
+  um.classList.remove("hidden");
+  um.innerHTML = `<div class="who"><b>${esc(ME.name)}</b><div class="small muted">${esc(ME.role_title)}${ME.supplier_name ? " · " + esc(ME.supplier_name) : ""}</div></div>
+    <button class="sm" id="pw">Parola</button><button class="sm" id="logout">Çıkış</button>`;
+  document.getElementById("logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.hash = "#/"; location.reload(); };
+  document.getElementById("pw").onclick = passwordForm;
+  applyPerms();
+  if (isSupplier() && (!location.hash || location.hash === "#/")) location.hash = `#/tedarikci/${ME.supplier_id}`;
+  router();
+}
+
+function authShell(html) {
+  document.getElementById("nav").classList.add("hidden");
+  document.getElementById("usermenu").classList.add("hidden");
+  $app.innerHTML = `<div class="card login-box">${html}</div>`;
+}
+
+function showLogin() {
+  authShell(`<h1>Giriş</h1><div class="muted" style="margin-bottom:16px">Tedarikçi Denetim</div>
+    <form id="lf"><label>E-posta</label><input name="email" type="email" required autocomplete="username">
+    <label>Parola</label><input name="password" type="password" required autocomplete="current-password">
+    <button class="primary" style="width:100%">Giriş yap</button></form>`);
+  document.getElementById("lf").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/api/auth/login", { method: "POST", body: formData(e.target) }); boot(); } catch (err) { toast(err.message); }
+  };
+}
+
+function showSetup() {
+  authShell(`<h1>İlk kurulum</h1><div class="muted" style="margin-bottom:16px">Yönetici hesabını oluşturun. Diğer kullanıcıları (denetçi, izleyici, tedarikçi) sonra "Kullanıcılar" sayfasından eklersiniz.</div>
+    <form id="sf"><label>Ad soyad</label><input name="name" required><label>E-posta</label><input name="email" type="email" required>
+    <label>Parola (en az 8 karakter)</label><input name="password" type="password" minlength="8" required autocomplete="new-password">
+    <button class="primary" style="width:100%">Yöneticiyi oluştur</button></form>`);
+  document.getElementById("sf").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/api/auth/setup", { method: "POST", body: formData(e.target) }); boot(); } catch (err) { toast(err.message); }
+  };
+}
+
+function passwordForm() {
+  modal(`<h2>Parola değiştir</h2><form id="f"><label>Mevcut parola</label><input type="password" name="current" required>
+    <label style="margin-top:8px">Yeni parola (en az 8 karakter)</label><input type="password" name="new" minlength="8" required>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></form>`, (box) => {
+    box.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api("/api/me/password", { method: "PUT", body: formData(e.target) }); closeModal(); toast("Parola değiştirildi"); } catch (err) { toast(err.message); }
+    };
+  });
+}
+
+boot();
 
 // ================================================================ PANO
 async function viewDashboard() {
@@ -121,7 +191,7 @@ async function viewDashboard() {
   const t = d.totals;
   $app.innerHTML = `
   <div class="page-head"><div><h1>Pano</h1><div class="muted">Tedarikçi risk durumu — ${new Date().toLocaleDateString("tr-TR")}</div></div>
-    <div class="actions"><a class="btn primary" href="#/tedarikciler">+ Tedarikçi</a></div></div>
+    <div class="actions"><a class="btn primary" href="#/tedarikciler" data-perm="supplier:write">+ Tedarikçi</a></div></div>
   <div class="kpis">
     <div class="kpi"><div class="v">${t.suppliers}</div><div class="l">Aktif tedarikçi</div></div>
     <div class="kpi"><div class="v" style="color:var(--bad)">${d.risk["yüksek"]}</div><div class="l">Yüksek riskli tedarikçi</div></div>
@@ -163,7 +233,7 @@ async function viewSuppliers() {
   const list = await api("/api/suppliers");
   $app.innerHTML = `
   <div class="page-head"><div><h1>Tedarikçiler</h1><div class="muted">${list.length} kayıt</div></div>
-    <div class="actions"><button class="primary" id="add">+ Yeni tedarikçi</button></div></div>
+    <div class="actions"><button class="primary" id="add" data-perm="supplier:write">+ Yeni tedarikçi</button></div></div>
   <div class="card">
     <div class="filters"><input id="q" placeholder="Ara (ad, kategori, domain)…" style="min-width:260px">
       <select id="fr"><option value="">Tüm riskler</option><option>yüksek</option><option>orta</option><option>düşük</option><option>bilinmiyor</option></select></div>
@@ -188,7 +258,8 @@ async function viewSuppliers() {
   draw();
 }
 
-function supplierForm(s = {}, focus = null) {
+async function supplierForm(s = {}, focus = null) {
+  const tiers = await api("/api/supplier-tiers").catch(() => []);
   const sel = (name, opts, val) => `<select name="${name}">${opts.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
   modal(`<h2>${s.id ? "Tedarikçiyi düzenle" : "Yeni tedarikçi"}</h2>
   <form id="f">
@@ -196,7 +267,8 @@ function supplierForm(s = {}, focus = null) {
       <div><label>Kategori</label><input name="category" placeholder="ör. Hammadde, Lojistik, Yazılım" value="${esc(s.category || "")}"></div></div>
     <div class="row"><div><label>Kritiklik</label>${sel("criticality", ["düşük", "orta", "yüksek"], s.criticality || "orta")}</div>
       <div><label>Durum</label>${sel("status", ["aktif", "askıda", "pasif"], s.status || "aktif")}</div>
-      <div><label>Ülke</label><input name="country" value="${esc(s.country || "")}"></div></div>
+      <div><label>Ülke</label><input name="country" value="${esc(s.country || "")}"></div>
+      <div><label>Seviye (tier)</label><select name="tier_id"><option value="">—</option>${tiers.map((t) => `<option value="${t.id}" ${t.id === s.tier_id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></div>
     <div class="row"><div><label>Yetkili</label><input name="contact_name" value="${esc(s.contact_name || "")}"></div>
       <div><label>E-posta</label><input name="email" type="email" value="${esc(s.email || "")}"></div>
       <div><label>Telefon</label><input name="phone" value="${esc(s.phone || "")}"></div></div>
@@ -234,11 +306,12 @@ function supplierForm(s = {}, focus = null) {
 async function viewSupplier(id, tab = "ozet") {
   const s = await api(`/api/suppliers/${id}`);
   const sm = s.summary;
-  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]];
+  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
+    !(k === "bildirimler" && !can("notify:send")) && !(k === "istihbarat" && isSupplier()));
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
-    <h1>${esc(s.name)}</h1><div class="muted">${esc([s.category, s.country].filter(Boolean).join(" · ") || "—")} · Kritiklik: <b>${esc(s.criticality)}</b> · ${statusBadge(s.status)}</div></div>
-    <div class="actions"><button id="edit">Düzenle</button><a class="btn" href="#/rapor/${s.id}">Rapor</a><button class="primary" id="newAudit">+ Denetim planla</button></div></div>
+    <h1>${esc(s.name)}</h1><div class="muted">${esc([s.category, s.country, s.tier_name].filter(Boolean).join(" · ") || "—")} · Kritiklik: <b>${esc(s.criticality)}</b> · ${statusBadge(s.status)}</div></div>
+    <div class="actions"><button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
   <div class="kpis">
     <div class="kpi"><div class="l">Risk seviyesi</div><div class="v">${riskBadge(sm.risk)}</div></div>
     <div class="kpi"><div class="l">Genel puan</div><div class="v" style="color:${scoreColor(sm.overall_score)}">${num(sm.overall_score)}</div></div>
@@ -261,7 +334,7 @@ async function viewSupplier(id, tab = "ozet") {
       <tr><th>Sonraki denetim</th><td>${fmtDate(sm.next_audit_date)}</td></tr>
       <tr><th>Kayıt tarihi</th><td>${fmtDate(s.created_at)}</td></tr></tbody></table>
       ${s.notes ? `<h3>Notlar</h3><div style="white-space:pre-wrap">${esc(s.notes)}</div>` : ""}
-      <div style="margin-top:16px"><button class="danger sm" id="del">Tedarikçiyi sil</button></div></div>
+      <div style="margin-top:16px"><button class="danger sm" id="del" data-perm="supplier:write">Tedarikçiyi sil</button></div></div>
       <div class="card"><h2>Öncelikli açık bulgular</h2>${findingsTable(s.findings.filter((f) => f.status !== "kapandı").slice(0, 8), { compact: true })}</div></div>`;
     document.getElementById("del").onclick = async () => {
       if (!confirm(`"${s.name}" ve tüm denetim/bulgu/tarama kayıtları silinsin mi?`)) return;
@@ -271,8 +344,8 @@ async function viewSupplier(id, tab = "ozet") {
   } else if (tab === "denetimler") {
     T.innerHTML = `<div class="card">${auditsTable(s.audits)}</div>`;
   } else if (tab === "bulgular") {
-    T.innerHTML = `<div class="card"><div class="actions" style="margin-bottom:12px"><button id="nf">+ Manuel bulgu ekle</button>
-      <button id="nsel">Seçilenleri bildir</button><button id="nall" ${sm.open_findings ? "" : "disabled"}>Tüm açık bulguları bildir (${sm.open_findings})</button></div>
+    T.innerHTML = `<div class="card"><div class="actions" style="margin-bottom:12px"><button id="nf" data-perm="finding:write">+ Manuel bulgu ekle</button>
+      <button id="nsel" data-perm="notify:send">Seçilenleri bildir</button><button id="nall" data-perm="notify:send" ${sm.open_findings ? "" : "disabled"}>Tüm açık bulguları bildir (${sm.open_findings})</button></div>
       <div id="ft"></div></div>`;
     document.getElementById("ft").innerHTML = findingsTable(s.findings, { selectable: true });
     bindFindingActions(T, s.findings);
@@ -288,12 +361,12 @@ async function viewSupplier(id, tab = "ozet") {
     T.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Domain güvenlik değerlendirmesi</h2>
       <div class="muted small">Pasif ve herkese açık kaynaklar: DNS, e-posta güvenliği (SPF/DMARC), TLS, HTTP güvenlik başlıkları, açık servisler ve bilinen CVE'ler (Shodan InternetDB), sertifika şeffaflığı (crt.sh), domain kaydı (RDAP).</div></div>
       <div class="actions"><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="cf" checked style="width:auto"> Başarısız kontrollerden bulgu oluştur</label>
-      <button class="primary" id="scan" ${s.domains.length ? "" : "disabled"}>Tüm domain'leri tara</button></div></div>
+      <button class="primary" id="scan" data-perm="intel:scan" ${s.domains.length ? "" : "disabled"}>Tüm domain'leri tara</button></div></div>
       ${s.domains.length ? "" : `<div class="empty">Bu tedarikçi için domain tanımlı değil. <a href="#" id="ed2">Domain ekleyin</a>.</div>`}
       ${s.scans.length ? `<table><thead><tr><th>Domain</th><th>Not</th><th>Puan</th><th>Özet</th><th>Tarih</th><th></th></tr></thead><tbody>
         ${s.scans.map((x) => { const su = x.result.summary; return `<tr><td><b>${esc(x.domain)}</b></td><td>${gradeBox(x.grade)}</td><td style="min-width:140px">${meter(x.score)}</td>
         <td class="small"><span style="color:var(--bad)">${su.fail} başarısız</span> · <span style="color:var(--warn)">${su.warn} uyarı</span> · <span style="color:var(--ok)">${su.pass} geçti</span>${su.error ? ` · ${su.error} ölçülemedi` : ""}</td>
-        <td class="small">${fmtDT(x.scanned_at)}</td><td style="white-space:nowrap"><button class="sm" data-nscan="${x.id}">Bildir</button> <a href="#/tarama/${x.id}">Detay →</a></td></tr>`; }).join("")}</tbody></table>` : ""}
+        <td class="small">${fmtDT(x.scanned_at)}</td><td style="white-space:nowrap"><button class="sm" data-nscan="${x.id}" data-perm="notify:send">Bildir</button> <a href="#/tarama/${x.id}">Detay →</a></td></tr>`; }).join("")}</tbody></table>` : ""}
       </div>
       ${s.scan_history.length > s.scans.length ? `<div class="card"><h2>Tarama geçmişi</h2><table><tbody>${s.scan_history.map((x) => `<tr><td>${fmtDT(x.scanned_at)}</td><td>${esc(x.domain)}</td><td>${gradeBox(x.grade)}</td><td>${num(x.score)}</td><td><a href="#/tarama/${x.id}">Detay</a></td></tr>`).join("")}</tbody></table></div>` : ""}`;
     const ed2 = document.getElementById("ed2"); if (ed2) ed2.onclick = (e) => { e.preventDefault(); supplierForm(s); };
@@ -486,7 +559,7 @@ function auditsTable(list, withSupplier = false) {
 async function viewAudits() {
   const list = await api("/api/audits");
   $app.innerHTML = `<div class="page-head"><div><h1>Denetimler</h1><div class="muted">${list.length} denetim</div></div>
-    <div class="actions"><button class="primary" id="na">+ Denetim planla</button></div></div><div class="card">${auditsTable(list, true)}</div>`;
+    <div class="actions"><button class="primary" id="na" data-perm="audit:write">+ Denetim planla</button></div></div><div class="card">${auditsTable(list, true)}</div>`;
   document.getElementById("na").onclick = async () => {
     const sups = await api("/api/suppliers");
     if (!sups.length) return toast("Önce bir tedarikçi ekleyin.");
@@ -606,9 +679,9 @@ async function viewQuestionSets() {
       <div class="small muted" style="margin:6px 0">${esc(x.description || "")}</div>
       <div class="small">${x.sections.length} bölüm · <b>${x.question_count}</b> soru${x.used_in ? ` · ${x.used_in} denetimde kullanıldı` : ""}</div>
       <div class="actions" style="margin-top:10px"><a class="btn sm" href="#/soru-seti/${x.id}">${x.builtin ? "Görüntüle" : "Düzenle"}</a>
-        <button class="sm" data-clone="${x.id}">Kopyala</button></div></div>`;
+        <button class="sm" data-clone="${x.id}" data-perm="template:write">Kopyala</button></div></div>`;
   $app.innerHTML = `<div class="page-head"><div><h1>Soru Setleri</h1><div class="muted">Denetimlerde kullanılacak standart ve özel soru setleri</div></div>
-    <div class="actions"><a class="btn primary" href="#/soru-seti/yeni">+ Yeni özel set</a></div></div>
+    <div class="actions"><a class="btn primary" href="#/soru-seti/yeni" data-perm="template:write">+ Yeni özel set</a></div></div>
     <h2>Standart setler</h2><div class="qs-grid">${sets.filter((x) => x.builtin).map(card).join("")}</div>
     <h2 style="margin-top:8px">Özel setlerim</h2>
     ${sets.some((x) => !x.builtin) ? `<div class="qs-grid">${sets.filter((x) => !x.builtin).map(card).join("")}</div>`
@@ -635,7 +708,7 @@ async function viewQuestionSet(id) {
     return;
   }
   $app.innerHTML = `<div class="page-head"><div>${head}<h1>${isNew ? "Yeni özel soru seti" : "Soru setini düzenle"}</h1></div>
-    <div class="actions">${isNew ? "" : `<button class="danger" id="del">Sil</button>`}<button class="primary" id="save">Kaydet</button></div></div>
+    <div class="actions" data-perm="template:write">${isNew ? "" : `<button class="danger" id="del">Sil</button>`}<button class="primary" id="save">Kaydet</button></div></div>
     <div class="card"><div class="row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
       <div><label>Set adı *</label><input id="n" value="${esc(x.name)}" placeholder="ör. Depo ve Lojistik Denetimi"></div>
       <div><label>Standart / etiket</label><input id="st" value="${esc(x.standard || "Özel")}" placeholder="ör. Özel, TISAX, SOC 2"></div></div>
@@ -668,7 +741,7 @@ async function viewAudit(id) {
   <div class="page-head"><div><div class="small"><a href="#/tedarikci/${a.supplier_id}/denetimler">← ${esc(a.supplier_name)}</a></div>
     <h1>Denetim — ${fmtDate(a.audit_date)}</h1><div class="muted">${esc(a.audit_type)} · Denetçi: ${esc(a.auditor || "—")}</div>
     <div class="chips" style="margin-top:6px">${(a.set_names || []).map((n) => `<span class="badge">${esc(n)}</span>`).join("")}</div></div>
-    <div class="actions"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></div></div>
+    <div class="actions" data-perm="audit:write"><button class="danger" id="del">Sil</button><button id="gen">Bulguları oluştur</button><button class="primary" id="save">Kaydet</button></div></div>
   <div class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start" id="lay">
     <div>${a.checklist.map((sec) => `<div class="card"><h2>${esc(sec.title)} <span class="muted small">· ağırlık ${num(sec.weight)}${(a.set_names || []).length > 1 && sec.source ? " · " + esc(sec.source) : ""}</span></h2>
       ${sec.questions.map((q) => `<div class="q" data-q="${q.id}"><div>${esc(q.text)}</div>
@@ -737,8 +810,8 @@ function findingsTable(list, { compact = false, withSupplier = false, selectable
     <td><b>${esc(f.title)}</b>${!compact && f.action ? `<div class="small" style="color:var(--primary)">Aksiyon: ${esc(f.action)}</div>` : ""}${!compact && f.description ? `<div class="small muted" style="white-space:pre-wrap">${esc(f.description)}</div>` : ""}${!compact && f.supplier_comment ? `<div class="small" style="margin-top:4px"><b>Tedarikçi:</b> ${esc(f.supplier_comment)}</div>` : ""}</td>
     ${compact ? "" : `<td><span class="badge">${esc(f.source)}</span></td><td>${esc(f.owner || "—")}</td>`}
     <td class="small" style="${overdue(f) ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(f.due_date)}${overdue(f) ? "<br>gecikti" : ""}</td>
-    <td>${compact ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto">${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
-    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
+    <td>${compact ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto" ${can("finding:write") ? "" : "disabled"}>${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
+    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindFindingActions(root, list) {
@@ -790,7 +863,7 @@ async function viewFindings() {
   const p = new URLSearchParams(location.hash.split("?")[1] || "");
   const state = { status: p.get("status") ?? "açık-tümü", source: "", sev: "", q: "" };
   $app.innerHTML = `<div class="page-head"><div><h1>Bulgular &amp; Aksiyonlar</h1><div class="muted">Uygunsuzluklar ve düzeltici faaliyet (DÖF) takibi</div></div>
-    <div class="actions"><button id="nsel">Seçilenleri tedarikçiye bildir</button><button id="csv">CSV indir</button></div></div>
+    <div class="actions"><button id="nsel" data-perm="notify:send">Seçilenleri tedarikçiye bildir</button><button id="csv">CSV indir</button></div></div>
     <div class="card"><div class="filters">
       <select id="fs"><option value="açık-tümü">Açık + devam eden</option><option value="">Tümü</option><option>açık</option><option>devam ediyor</option><option>kapandı</option></select>
       <select id="fsrc"><option value="">Tüm kaynaklar</option><option>denetim</option><option>istihbarat</option><option>manuel</option></select>
@@ -894,7 +967,7 @@ function scanDetail(r) {
 async function viewScan(id) {
   const s = await api(`/api/scans/${id}`);
   $app.innerHTML = `<div class="page-head"><div><div class="small"><a href="#/tedarikci/${s.supplier_id}/istihbarat">← Tedarikçiye dön</a></div><h1>Tarama sonucu</h1></div>
-    <div class="actions"><button class="primary" id="nscan">Tedarikçiye bildir</button></div></div>${scanDetail(s.result)}`;
+    <div class="actions"><button class="primary" id="nscan" data-perm="notify:send">Tedarikçiye bildir</button></div></div>${scanDetail(s.result)}`;
   document.getElementById("nscan").onclick = async () => {
     const f = await api(`/api/findings?supplier_id=${s.supplier_id}&source=istihbarat&status=açık-tümü`);
     notifyModal({ supplier_id: s.supplier_id, scan_id: s.id, finding_ids: f.filter((x) => x.title.startsWith(`[${s.domain}]`)).map((x) => x.id) });
@@ -928,4 +1001,72 @@ async function viewReport(id) {
     : `<div class="muted">Tarama yapılmadı.</div>`}</div>
   <div class="card"><h2>Açık bulgular ve aksiyon planı</h2>${findingsTable(open, { compact: false }).replace(/<select[^>]*>[\s\S]*?<\/select>/g, (m) => statusBadge((m.match(/<option selected>([^<]+)/) || [])[1] || ""))}</div>`;
   $app.querySelectorAll("[data-edit]").forEach((b) => b.remove());
+}
+
+
+// ================================================================ KULLANICILAR & SEVİYELER
+const ROLE_TR = { admin: "Yönetici", auditor: "Denetçi", supplier: "Tedarikçi", viewer: "İzleyici" };
+
+async function viewUsers() {
+  const [users, sups, tiers] = await Promise.all([api("/api/users"), api("/api/suppliers"), api("/api/supplier-tiers")]);
+  $app.innerHTML = `<div class="page-head"><div><h1>Kullanıcılar</h1><div class="muted">Roller: <b>Yönetici</b> her şey · <b>Denetçi</b> denetim, bulgu, CAPA onayı · <b>İzleyici</b> salt okunur · <b>Tedarikçi</b> yalnızca kendi firmasının kayıtları ve CAPA girişi</div></div>
+    <div class="actions"><button class="primary" id="nu">+ Kullanıcı</button></div></div>
+  <div class="card"><div class="table-wrap"><table><thead><tr><th>Ad</th><th>E-posta</th><th>Rol</th><th>Tedarikçi</th><th>Son giriş</th><th>Durum</th><th></th></tr></thead><tbody>
+  ${users.map((u) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td><td>${esc(ROLE_TR[u.role] || u.role)}</td><td>${esc(u.supplier_name || "—")}</td>
+    <td class="small">${fmtDT(u.last_login_at)}</td><td>${u.active ? `<span class="badge b-ok">aktif</span>` : `<span class="badge">pasif</span>`}</td>
+    <td><button class="sm" data-u="${u.id}">Düzenle</button></td></tr>`).join("")}</tbody></table></div></div>
+  <div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Tedarikçi seviyeleri (tier)</h2><div class="small muted">Seviye, denetim sıklığını belirler; tedarikçi formundan atanır.</div></div>
+    <button id="nt">+ Seviye</button></div>
+    <table><thead><tr><th>Seviye</th><th>Ad</th><th>Denetim sıklığı</th><th class="num">Tedarikçi</th><th></th></tr></thead><tbody>
+    ${tiers.map((t) => `<tr><td>${t.level}</td><td><b>${esc(t.name)}</b><div class="small muted">${esc(t.description || "")}</div></td><td>${t.audit_interval_days} gün</td><td class="num">${t.supplier_count}</td>
+      <td><button class="sm" data-t="${t.id}">Düzenle</button></td></tr>`).join("")}</tbody></table></div>`;
+  const userForm = (u = { role: "auditor", active: 1 }) => modal(`<h2>${u.id ? "Kullanıcıyı düzenle" : "Yeni kullanıcı"}</h2><form id="f">
+    <div class="row"><div><label>Ad soyad</label><input name="name" required value="${esc(u.name || "")}"></div><div><label>E-posta</label><input name="email" type="email" required value="${esc(u.email || "")}"></div></div>
+    <div class="row"><div><label>Rol</label><select name="role">${Object.entries(ROLE_TR).map(([k, v]) => `<option value="${k}" ${k === u.role ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+      <div id="supRow"><label>Tedarikçi</label><select name="supplier_id"><option value="">—</option>${sups.map((x) => `<option value="${x.id}" ${x.id === u.supplier_id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div></div>
+    <div class="row"><div><label>${u.id ? "Yeni parola (değiştirmek için)" : "Parola (en az 8 karakter)"}</label><input name="password" type="password" minlength="8" ${u.id ? "" : "required"} autocomplete="new-password"></div>
+      <div><label>Durum</label><select name="active"><option value="1" ${u.active ? "selected" : ""}>aktif</option><option value="0" ${u.active ? "" : "selected"}>pasif</option></select></div></div>
+    <div class="actions" style="justify-content:flex-end"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></form>`, (box) => {
+    const sync = () => box.querySelector("#supRow").classList.toggle("hidden", box.querySelector("[name=role]").value !== "supplier");
+    box.querySelector("[name=role]").onchange = sync; sync();
+    box.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const d = formData(e.target);
+      d.active = d.active === "1";
+      if (d.role !== "supplier") d.supplier_id = null;
+      try { await api(u.id ? `/api/users/${u.id}` : "/api/users", { method: u.id ? "PUT" : "POST", body: d }); closeModal(); toast("Kaydedildi"); router(); }
+      catch (err) { toast(err.message); }
+    };
+  });
+  const tierForm = (t = { level: 4, audit_interval_days: 365 }) => modal(`<h2>${t.id ? "Seviyeyi düzenle" : "Yeni seviye"}</h2><form id="f">
+    <div class="row"><div><label>Ad</label><input name="name" required value="${esc(t.name || "")}"></div><div><label>Seviye no (1 = en kritik)</label><input name="level" type="number" min="1" max="9" value="${t.level}"></div>
+      <div><label>Denetim sıklığı (gün)</label><input name="audit_interval_days" type="number" min="30" value="${t.audit_interval_days}"></div></div>
+    <label>Açıklama</label><textarea name="description">${esc(t.description || "")}</textarea>
+    <div class="actions" style="justify-content:space-between;margin-top:12px">${t.id ? `<button type="button" class="danger" id="td">Sil</button>` : "<span></span>"}<div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></div></form>`, (box) => {
+    box.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api(t.id ? `/api/supplier-tiers/${t.id}` : "/api/supplier-tiers", { method: t.id ? "PUT" : "POST", body: formData(e.target) }); closeModal(); router(); }
+      catch (err) { toast(err.message); }
+    };
+    const td = box.querySelector("#td");
+    if (td) td.onclick = async () => { try { await api(`/api/supplier-tiers/${t.id}`, { method: "DELETE" }); closeModal(); router(); } catch (err) { toast(err.message); } };
+  });
+  document.getElementById("nu").onclick = () => userForm();
+  document.getElementById("nt").onclick = () => tierForm();
+  $app.querySelectorAll("[data-u]").forEach((b) => (b.onclick = () => userForm(users.find((u) => u.id == b.dataset.u))));
+  $app.querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => tierForm(tiers.find((t) => t.id == b.dataset.t))));
+}
+
+async function viewAuditLogs() {
+  const logs = await api("/api/audit-logs?limit=500");
+  $app.innerHTML = `<div class="page-head"><div><h1>İşlem Kayıtları</h1><div class="muted">Kim, ne zaman, neyi değiştirdi (son 500 kayıt)</div></div></div>
+  <div class="card"><div class="filters"><input id="lq" placeholder="Ara (kullanıcı, işlem, kayıt)…" style="min-width:300px"></div><div id="lt"></div></div>`;
+  const draw = () => {
+    const q = document.getElementById("lq").value.toLowerCase();
+    const r = logs.filter((l) => !q || [l.actor, l.action, l.entity, l.entity_id, JSON.stringify(l.detail)].join(" ").toLowerCase().includes(q));
+    document.getElementById("lt").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Zaman</th><th>Kullanıcı</th><th>İşlem</th><th>Kayıt</th><th>Ayrıntı</th><th>IP</th></tr></thead><tbody>
+      ${r.map((l) => `<tr><td class="small">${fmtDT(l.created_at + "Z")}</td><td>${esc(l.actor || "—")}</td><td><code>${esc(l.action)}</code></td>
+        <td class="small">${esc([l.entity, l.entity_id].filter(Boolean).join(" #"))}</td><td class="small muted" style="max-width:360px;word-break:break-word">${esc(l.detail ? JSON.stringify(l.detail) : "")}</td><td class="small">${esc(l.ip || "")}</td></tr>`).join("")}</tbody></table></div>`;
+  };
+  document.getElementById("lq").oninput = draw; draw();
 }

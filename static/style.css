@@ -121,6 +121,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-wea
   .q { grid-template-columns: 1fr; }
 }
 
+/* Oturum */
+.usermenu { margin-left: auto; display: flex; align-items: center; gap: 10px; white-space: nowrap; font-size: 13px; }
+.usermenu .who { text-align: right; line-height: 1.2; }
+.login-box { max-width: 400px; margin: 64px auto; }
+.login-box input { margin-bottom: 12px; }
+
 /* Soru setleri */
 .set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
 .set-card { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin: 0; color: var(--text); font-weight: 400; font-size: 14px; }

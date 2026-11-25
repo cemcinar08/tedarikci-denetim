@@ -84,6 +84,56 @@ CREATE TABLE IF NOT EXISTS intel_scans (
     result       TEXT NOT NULL  -- JSON
 );
 
+-- ---------------------------------------------------------------- Erişim (RBAC)
+CREATE TABLE IF NOT EXISTS supplier_tiers (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                 TEXT NOT NULL UNIQUE,
+    level                INTEGER NOT NULL,              -- 1 = en kritik
+    audit_interval_days  INTEGER NOT NULL DEFAULT 365,  -- denetim sıklığı
+    description          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL UNIQUE,                  -- admin / auditor / supplier / viewer
+    title        TEXT NOT NULL,
+    permissions  TEXT NOT NULL DEFAULT '[]'             -- JSON (kaynak: app/auth.py ROLES)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    email          TEXT NOT NULL UNIQUE,
+    password_hash  TEXT NOT NULL,
+    role_id        INTEGER NOT NULL REFERENCES roles(id),
+    supplier_id    INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,  -- yalnızca supplier rolü
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at  TEXT NOT NULL,
+    ip          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor       TEXT,                 -- kullanıcı silinse de iz kalsın
+    action      TEXT NOT NULL,        -- ör. "POST /api/suppliers", "capa.approve"
+    entity      TEXT,
+    entity_id   TEXT,
+    detail      TEXT,                 -- JSON
+    ip          TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_users_supplier ON users(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_logs_entity ON audit_logs(entity, entity_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -140,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_scans_supplier ON intel_scans(supplier_id, domain
 MIGRATIONS = {
     "audits": {"checklist": "TEXT", "set_names": "TEXT"},
     "suppliers": {
+        "tier_id": "INTEGER REFERENCES supplier_tiers(id) ON DELETE SET NULL",
         "notify_emails": "TEXT",                 # virgülle ayrılmış alıcılar
         "webhook_url": "TEXT",
         "webhook_secret": "TEXT",                # HMAC-SHA256 imza anahtarı
@@ -183,6 +234,8 @@ def init_db() -> None:
             for col, typ in cols.items():
                 if col not in have:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        from .auth import seed_auth
+        seed_auth(db)
         # Yerleşik soru setlerini yükle / güncelle
         for qs in BUILTIN_SETS:
             db.execute(
@@ -199,9 +252,12 @@ def row(r):
     d = dict(r)
     if "domains" in d and isinstance(d["domains"], str):
         d["domains"] = json.loads(d["domains"] or "[]")
-    for k in ("sections", "checklist", "set_names"):
+    for k in ("sections", "checklist", "set_names", "detail", "permissions", "condition_json", "kill_switches"):
         if k in d and isinstance(d[k], str):
-            d[k] = json.loads(d[k])
+            try:
+                d[k] = json.loads(d[k])
+            except ValueError:
+                pass
     if "result" in d and isinstance(d["result"], str):
         d["result"] = json.loads(d["result"])
     return d

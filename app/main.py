@@ -17,6 +17,8 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
+from . import auth
+from .auth import ensure_supplier_access, is_supplier_user, scoped
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
@@ -26,7 +28,9 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Tedarikçi Denetim", version="1.0", lifespan=lifespan)
+app = FastAPI(title="Tedarikçi Denetim", version="2.0", lifespan=lifespan)
+app.add_middleware(auth.AuthMiddleware)
+app.include_router(auth.router)
 
 
 Severity = Literal["kritik", "yüksek", "orta", "düşük"]
@@ -54,6 +58,7 @@ class SupplierIn(BaseModel):
     criticality: Literal["düşük", "orta", "yüksek"] = "orta"
     status: Literal["aktif", "askıda", "pasif"] = "aktif"
     notes: Optional[str] = None
+    tier_id: Optional[int] = None
     # Bildirim ayarları
     notify_emails: Optional[str] = None     # virgülle ayrılmış
     webhook_url: Optional[str] = None
@@ -170,10 +175,29 @@ class FindingUpdate(BaseModel):
 
 
 # ============================================================ Yardımcılar
+def _check_tier(db, tier_id):
+    if tier_id and not db.execute("SELECT 1 FROM supplier_tiers WHERE id=?", (tier_id,)).fetchone():
+        raise HTTPException(422, "Geçersiz tedarikçi seviyesi")
+
+
 def _get_supplier(db, sid: int) -> dict:
-    s = row(db.execute("SELECT * FROM suppliers WHERE id=?", (sid,)).fetchone())
+    s = row(db.execute(
+        "SELECT s.*, t.name AS tier_name, t.level AS tier_level, t.audit_interval_days FROM suppliers s "
+        "LEFT JOIN supplier_tiers t ON t.id=s.tier_id WHERE s.id=?", (sid,)).fetchone())
     if not s:
         raise HTTPException(404, "Tedarikçi bulunamadı")
+    ensure_supplier_access(s["id"])
+    return _for_viewer(s)
+
+
+INTERNAL_SUPPLIER_FIELDS = ("notes", "webhook_secret", "notify_emails", "webhook_url", "auto_notify")
+
+
+def _for_viewer(s: dict) -> dict:
+    """Tedarikçi kullanıcısı kendi kaydındaki iç notları ve entegrasyon sırlarını görmez."""
+    if is_supplier_user():
+        for k in INTERNAL_SUPPLIER_FIELDS:
+            s.pop(k, None)
     return s
 
 
@@ -349,9 +373,12 @@ def _build_checklist(db, body: "AuditIn") -> tuple[list[dict], list[str]]:
 def list_suppliers():
     with get_db() as db:
         out = []
-        for s in rows(db.execute("SELECT * FROM suppliers ORDER BY name COLLATE NOCASE").fetchall()):
+        w, p = scoped("s.id")
+        for s in rows(db.execute(
+                "SELECT s.*, t.name AS tier_name, t.level AS tier_level FROM suppliers s "
+                "LEFT JOIN supplier_tiers t ON t.id=s.tier_id WHERE 1=1" + w + " ORDER BY s.name COLLATE NOCASE", p).fetchall()):
             s["summary"] = _summary(db, s)
-            out.append(s)
+            out.append(_for_viewer(s))
         return out
 
 
@@ -360,6 +387,7 @@ def create_supplier(body: SupplierIn):
     d = body.model_dump()
     d["domains"] = json.dumps(d["domains"])
     with get_db() as db:
+        _check_tier(db, d["tier_id"])
         cur = db.execute(
             f"INSERT INTO suppliers ({', '.join(d)}) VALUES ({', '.join('?' * len(d))})", list(d.values()))
         return _get_supplier(db, cur.lastrowid)
@@ -389,6 +417,7 @@ def update_supplier(sid: int, body: SupplierIn):
     d["domains"] = json.dumps(d["domains"])
     with get_db() as db:
         _get_supplier(db, sid)
+        _check_tier(db, d["tier_id"])
         db.execute(f"UPDATE suppliers SET {', '.join(k + '=?' for k in d)} WHERE id=?", [*d.values(), sid])
         return _get_supplier(db, sid)
 
@@ -403,10 +432,11 @@ def delete_supplier(sid: int):
 # ============================================================ Denetimler
 @app.get("/api/audits")
 def list_audits():
+    w, p = scoped("a.supplier_id")
     with get_db() as db:
         return rows(db.execute(
-            "SELECT a.*, s.name AS supplier_name FROM audits a JOIN suppliers s ON s.id=a.supplier_id "
-            "ORDER BY a.audit_date DESC, a.id DESC").fetchall())
+            "SELECT a.*, s.name AS supplier_name FROM audits a JOIN suppliers s ON s.id=a.supplier_id WHERE 1=1" + w +
+            " ORDER BY a.audit_date DESC, a.id DESC", p).fetchall())
 
 
 @app.post("/api/suppliers/{sid}/audits", status_code=201)
@@ -431,6 +461,7 @@ def get_audit(aid: int, db=None):
             (aid,)).fetchone())
         if not a:
             raise HTTPException(404, "Denetim bulunamadı")
+        ensure_supplier_access(a["supplier_id"])
         ans = db.execute("SELECT question_id, answer, note FROM audit_answers WHERE audit_id=?", (aid,)).fetchall()
         a["answers"] = {r["question_id"]: {"answer": r["answer"], "note": r["note"]} for r in ans}
         if not a.get("checklist"):
@@ -518,6 +549,8 @@ def list_findings(status: Optional[str] = None, supplier_id: Optional[int] = Non
         q += " AND f.supplier_id=?"; params.append(supplier_id)
     if source:
         q += " AND f.source=?"; params.append(source)
+    w, p = scoped("f.supplier_id")
+    q += w; params += p
     q += (" ORDER BY f.status='kapandı', CASE f.severity WHEN 'kritik' THEN 0 WHEN 'yüksek' THEN 1 "
           "WHEN 'orta' THEN 2 ELSE 3 END, f.due_date")
     with get_db() as db:
@@ -614,6 +647,7 @@ def get_scan(scan_id: int):
         s = row(db.execute("SELECT * FROM intel_scans WHERE id=?", (scan_id,)).fetchone())
         if not s:
             raise HTTPException(404, "Tarama bulunamadı")
+        ensure_supplier_access(s["supplier_id"])
         return s
 
 
@@ -631,7 +665,10 @@ async def quick_scan(domain: str):
 def dashboard():
     with get_db() as db:
         sups = []
-        for s in rows(db.execute("SELECT * FROM suppliers WHERE status!='pasif'").fetchall()):
+        w, p = scoped("id")
+        wf, pf = scoped("f.supplier_id")
+        wa, pa = scoped("a.supplier_id")
+        for s in rows(db.execute("SELECT * FROM suppliers WHERE status!='pasif'" + w, p).fetchall()):
             s["summary"] = _summary(db, s)
             sups.append(s)
         risk = {k: 0 for k in ("yüksek", "orta", "düşük", "bilinmiyor")}
@@ -641,13 +678,13 @@ def dashboard():
             if s["summary"]["intel_grade"]:
                 grades[s["summary"]["intel_grade"]] += 1
         sev = {r["severity"]: r["n"] for r in db.execute(
-            "SELECT severity, COUNT(*) n FROM findings WHERE status!='kapandı' GROUP BY severity")}
+            "SELECT severity, COUNT(*) n FROM findings f WHERE status!='kapandı'" + wf + " GROUP BY severity", pf)}
         overdue = rows(db.execute(
             "SELECT f.*, s.name AS supplier_name FROM findings f JOIN suppliers s ON s.id=f.supplier_id "
-            "WHERE f.status!='kapandı' AND f.due_date < ? ORDER BY f.due_date LIMIT 20", (today(),)).fetchall())
+            "WHERE f.status!='kapandı' AND f.due_date < ?" + wf + " ORDER BY f.due_date LIMIT 20", [today(), *pf]).fetchall())
         upcoming = rows(db.execute(
             "SELECT a.*, s.name AS supplier_name FROM audits a JOIN suppliers s ON s.id=a.supplier_id "
-            "WHERE a.status!='tamamlandı' ORDER BY a.audit_date LIMIT 10").fetchall())
+            "WHERE a.status!='tamamlandı'" + wa + " ORDER BY a.audit_date LIMIT 10", pa).fetchall())
         stale = [
             {"id": s["id"], "name": s["name"], "last_audit_date": s["summary"]["last_audit_date"]}
             for s in sups
@@ -659,8 +696,8 @@ def dashboard():
             key=lambda x: ({"yüksek": 0, "orta": 1, "düşük": 2, "bilinmiyor": 3}[x["risk"]],
                            x["overall_score"] if x["overall_score"] is not None else 999))
         closed_30 = db.execute(
-            "SELECT COUNT(*) FROM findings WHERE status='kapandı' AND closed_at >= ?",
-            ((dt.date.today() - dt.timedelta(days=30)).isoformat(),)).fetchone()[0]
+            "SELECT COUNT(*) FROM findings f WHERE status='kapandı' AND closed_at >= ?" + wf,
+            [(dt.date.today() - dt.timedelta(days=30)).isoformat(), *pf]).fetchone()[0]
         return {
             "totals": {
                 "suppliers": len(sups),
