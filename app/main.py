@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import capa, events, evidence, importer, lifecycle, risk, summary
+from . import capa, events, evidence, exceptions, importer, lifecycle, risk, summary
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -153,7 +153,7 @@ class FindingUpdate(BaseModel):
     action: Optional[str] = None
     owner: Optional[str] = None
     due_date: Optional[str] = None
-    status: Optional[Literal["açık", "devam ediyor", "kapandı"]] = None
+    status: Optional[Literal["açık", "devam ediyor", "kapandı"]] = None  # 'risk kabul edildi' yalnızca onay akışıyla
 
 
 # ============================================================ Yardımcılar
@@ -215,12 +215,12 @@ def _summary(db, s: dict) -> dict:
     intel = round(min(scored), 1) if scored else None  # en zayıf domain belirleyicidir
     f = db.execute(
         """SELECT
-             SUM(status!='kapandı') AS open,
-             SUM(status!='kapandı' AND severity='kritik') AS critical,
-             SUM(status!='kapandı' AND due_date IS NOT NULL AND due_date < ?) AS overdue
+             SUM(status IN ('açık','devam ediyor')) AS open,
+             SUM(status IN ('açık','devam ediyor') AND severity='kritik') AS critical,
+             SUM(status IN ('açık','devam ediyor') AND due_date IS NOT NULL AND due_date < ?) AS overdue
            FROM findings WHERE supplier_id=?""", (today(), sid)).fetchone()
     cp = db.execute(
-        "SELECT SUM(status!='onaylandı') AS open, SUM(status!='onaylandı' AND due_date < ?) AS overdue, "
+        "SELECT SUM(status NOT IN ('onaylandı','iptal edildi')) AS open, SUM(status NOT IN ('onaylandı','iptal edildi') AND due_date < ?) AS overdue, "
         "SUM(status='onay bekliyor') AS pending FROM capa_items WHERE supplier_id=?", (today(), sid)).fetchone()
     cert = db.execute("SELECT MIN(expires_at) FROM evidence_files WHERE supplier_id=? AND kind='sertifika' AND expires_at IS NOT NULL",
                       (sid,)).fetchone()[0]
@@ -394,7 +394,7 @@ def get_supplier(sid: int):
         s["audits"] = rows(db.execute(
             "SELECT * FROM audits WHERE supplier_id=? ORDER BY audit_date DESC, id DESC", (sid,)).fetchall())
         s["findings"] = rows(db.execute(
-            "SELECT * FROM findings WHERE supplier_id=? ORDER BY status='kapandı', "
+            "SELECT f.*, (SELECT e.type || '|' || e.status FROM finding_exceptions e WHERE e.finding_id=f.id ORDER BY e.id DESC LIMIT 1) AS exception FROM findings f WHERE supplier_id=? ORDER BY status IN ('kapandı','risk kabul edildi'), "
             "CASE severity WHEN 'kritik' THEN 0 WHEN 'yüksek' THEN 1 WHEN 'orta' THEN 2 ELSE 3 END, due_date",
             (sid,)).fetchall())
         s["scans"] = _latest_scans(db, sid)
@@ -545,10 +545,11 @@ async def generate_audit_findings(aid: int):
 # ============================================================ Bulgular / Aksiyonlar
 @app.get("/api/findings")
 def list_findings(status: Optional[str] = None, supplier_id: Optional[int] = None, source: Optional[str] = None):
-    q = "SELECT f.*, s.name AS supplier_name FROM findings f JOIN suppliers s ON s.id=f.supplier_id WHERE 1=1"
+    q = ("SELECT f.*, s.name AS supplier_name, (SELECT e.type || '|' || e.status FROM finding_exceptions e WHERE e.finding_id=f.id ORDER BY e.id DESC LIMIT 1) AS exception "
+         "FROM findings f JOIN suppliers s ON s.id=f.supplier_id WHERE 1=1")
     params: list = []
     if status == "açık-tümü":
-        q += " AND f.status != 'kapandı'"
+        q += " AND f.status IN ('açık','devam ediyor')"
     elif status:
         q += " AND f.status=?"; params.append(status)
     if supplier_id:
@@ -557,7 +558,7 @@ def list_findings(status: Optional[str] = None, supplier_id: Optional[int] = Non
         q += " AND f.source=?"; params.append(source)
     w, p = scoped("f.supplier_id")
     q += w; params += p
-    q += (" ORDER BY f.status='kapandı', CASE f.severity WHEN 'kritik' THEN 0 WHEN 'yüksek' THEN 1 "
+    q += (" ORDER BY f.status IN ('kapandı','risk kabul edildi'), CASE f.severity WHEN 'kritik' THEN 0 WHEN 'yüksek' THEN 1 "
           "WHEN 'orta' THEN 2 ELSE 3 END, f.due_date")
     with get_db() as db:
         return rows(db.execute(q, params).fetchall())
@@ -690,10 +691,10 @@ def dashboard():
             if s["summary"]["intel_grade"]:
                 grades[s["summary"]["intel_grade"]] += 1
         sev = {r["severity"]: r["n"] for r in db.execute(
-            "SELECT severity, COUNT(*) n FROM findings f WHERE status!='kapandı'" + wf + " GROUP BY severity", pf)}
+            "SELECT severity, COUNT(*) n FROM findings f WHERE status IN ('açık','devam ediyor')" + wf + " GROUP BY severity", pf)}
         overdue = rows(db.execute(
             "SELECT f.*, s.name AS supplier_name FROM findings f JOIN suppliers s ON s.id=f.supplier_id "
-            "WHERE f.status!='kapandı' AND f.due_date < ?" + wf + " ORDER BY f.due_date LIMIT 20", [today(), *pf]).fetchall())
+            "WHERE f.status IN ('açık','devam ediyor') AND f.due_date < ?" + wf + " ORDER BY f.due_date LIMIT 20", [today(), *pf]).fetchall())
         upcoming = rows(db.execute(
             "SELECT a.*, s.name AS supplier_name FROM audits a JOIN suppliers s ON s.id=a.supplier_id "
             "WHERE a.status!='tamamlandı'" + wa + " ORDER BY a.audit_date LIMIT 10", pa).fetchall())
@@ -733,6 +734,7 @@ app.include_router(summary.router)
 app.include_router(risk.router)
 app.include_router(importer.router)
 app.include_router(lifecycle.router)
+app.include_router(exceptions.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

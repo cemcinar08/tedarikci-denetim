@@ -344,6 +344,36 @@ CREATE TABLE IF NOT EXISTS contracts (
 );
 CREATE INDEX IF NOT EXISTS idx_contracts_supplier ON contracts(supplier_id, end_date);
 
+-- ---------------------------------------------------------------- İstisnalar ve mesajlaşma
+CREATE TABLE IF NOT EXISTS finding_exceptions (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id             INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    type                   TEXT NOT NULL,          -- itiraz / risk kabulü
+    reason                 TEXT NOT NULL,
+    compensating_controls  TEXT,
+    expires_at             TEXT,                   -- risk kabulü bitişi
+    status                 TEXT NOT NULL DEFAULT 'beklemede',  -- beklemede / onaylandı / reddedildi / süresi doldu
+    requested_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    requested_by_name      TEXT,
+    requested_by_role      TEXT,
+    requested_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    decided_by             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    decided_by_name        TEXT,
+    decided_at             TEXT,
+    decision_comment       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_exc_finding ON finding_exceptions(finding_id, status);
+
+CREATE TABLE IF NOT EXISTS capa_comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    capa_id     INTEGER NOT NULL REFERENCES capa_items(id) ON DELETE CASCADE,
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    author      TEXT,
+    side        TEXT NOT NULL,            -- kurum / tedarikçi
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT

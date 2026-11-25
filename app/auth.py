@@ -32,10 +32,11 @@ ROLES: dict[str, dict] = {
     "auditor": {"title": "Denetçi", "perms": [
         "supplier:read", "supplier:write", "audit:read", "audit:write", "template:read", "template:write",
         "finding:read", "finding:write", "capa:read", "capa:write", "capa:review", "evidence:read", "evidence:write",
-        "intel:scan", "notify:send", "report:read", "summary:read", "settings:read", "contract:read", "contract:write"]},
+        "intel:scan", "notify:send", "report:read", "summary:read", "settings:read", "contract:read", "contract:write",
+        "finding:dispute", "capa:comment"]},
     "supplier": {"title": "Tedarikçi", "perms": [
         "supplier:read", "audit:read", "finding:read", "capa:read", "capa:submit", "evidence:read", "evidence:write",
-        "report:read", "summary:read"]},
+        "report:read", "summary:read", "finding:dispute", "capa:comment"]},
     "viewer": {"title": "İzleyici", "perms": [
         "supplier:read", "audit:read", "template:read", "finding:read", "capa:read", "evidence:read",
         "report:read", "summary:read", "contract:read"]},
@@ -81,6 +82,9 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("GET", r"/api/capa", "capa:read"), ("GET", rf"/api/capa/{_R}", "capa:read"),
     ("POST", r"/api/capa", "capa:write"), ("POST", rf"/api/capa/{_R}/submit", "capa:submit"),
     ("POST", rf"/api/capa/{_R}/review", "capa:review"),
+    ("GET", rf"/api/capa/{_R}/comments", "capa:read"), ("POST", rf"/api/capa/{_R}/comments", "capa:comment"),
+    ("GET", r"/api/exceptions", "finding:read"), ("POST", rf"/api/exceptions/{_R}/decide", "finding:write"),
+    ("GET", rf"/api/findings/{_R}/exceptions", "finding:read"), ("POST", rf"/api/findings/{_R}/exceptions", "finding:dispute"),
     ("GET", r"/api/evidence", "evidence:read"), ("GET", rf"/api/evidence/{_R}(/download)?", "evidence:read"),
     ("POST", r"/api/evidence", "evidence:write"), ("PUT", rf"/api/evidence/{_R}", "evidence:write"),
     ("DELETE", rf"/api/evidence/{_R}", "evidence:write"),

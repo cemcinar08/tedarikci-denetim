@@ -30,6 +30,9 @@ TRANSITIONS = {
     ("reddedildi", "submit"): "onay bekliyor",
     ("onay bekliyor", "approve"): "onaylandı",
     ("onay bekliyor", "reject"): "reddedildi",
+    ("açık", "cancel"): "iptal edildi",
+    ("reddedildi", "cancel"): "iptal edildi",
+    ("onay bekliyor", "cancel"): "iptal edildi",
 }
 OPEN_STATUSES = ("açık", "onay bekliyor", "reddedildi")
 
@@ -197,7 +200,7 @@ def create_manual(body: CapaIn):
             f = row(db.execute("SELECT * FROM findings WHERE id=?", (body.finding_id,)).fetchone())
             if not f:
                 raise HTTPException(404, "Bulgu bulunamadı")
-            if db.execute("SELECT 1 FROM capa_items WHERE finding_id=? AND status!='onaylandı'", (f["id"],)).fetchone():
+            if db.execute("SELECT 1 FROM capa_items WHERE finding_id=? AND status NOT IN ('onaylandı','iptal edildi')", (f["id"],)).fetchone():
                 raise HTTPException(409, "Bu bulgu için açık bir CAPA zaten var.")
             cid = create_capa(db, supplier_id=f["supplier_id"], finding_id=f["id"], audit_id=f["audit_id"],
                               question_id=None, title=body.title or f["title"], severity=f["severity"],
@@ -262,3 +265,52 @@ def review(cid: int, body: ReviewIn):
         events.emit("capa.approved" if to == "onaylandı" else "capa.rejected", c["supplier_id"], "capa", cid, _payload(c), db)
         auth.log(f"capa.{body.decision}", "capa", cid, {"comment": body.comment}, db=db)
         return c
+
+
+# ------------------------------------------------------------------ mesajlaşma
+class CommentIn(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+@router.get("/api/capa/{cid}/comments")
+def list_comments(cid: int):
+    with get_db() as db:
+        get_capa(db, cid)
+        return rows(db.execute("SELECT * FROM capa_comments WHERE capa_id=? ORDER BY id", (cid,)).fetchall())
+
+
+@router.post("/api/capa/{cid}/comments", status_code=201)
+def add_comment(cid: int, body: CommentIn):
+    u = current_user()
+    with get_db() as db:
+        c = get_capa(db, cid)
+        if c["status"] in ("onaylandı", "iptal edildi"):
+            raise HTTPException(409, "Kapanmış CAPA'ya mesaj yazılamaz.")
+        side = "tedarikçi" if u.get("role") == "supplier" else "kurum"
+        mid = db.execute("INSERT INTO capa_comments (capa_id, user_id, author, side, body) VALUES (?,?,?,?,?)",
+                         (cid, u.get("id"), u.get("name"), side, body.body.strip())).lastrowid
+        events.emit("capa.commented", c["supplier_id"], "capa", cid,
+                    {"id": cid, "title": c["title"], "author": u.get("name"), "side": side, "message": body.body.strip()[:500]}, db)
+        auth.log("capa.comment", "capa", cid, {"comment_id": mid}, db=db)
+        sup = row(db.execute("SELECT name, notify_emails FROM suppliers WHERE id=?", (c["supplier_id"],)).fetchone())
+        m = row(db.execute("SELECT * FROM capa_comments WHERE id=?", (mid,)).fetchone())
+    if side == "kurum" and sup and sup.get("notify_emails"):
+        _mail_supplier(sup, c, body.body.strip(), u.get("name"))
+    return m
+
+
+def _mail_supplier(sup: dict, c: dict, text: str, author: str) -> None:
+    """Kurumdan gelen mesajı tedarikçinin bildirim adreslerine e-postayla iletir (SMTP ayarlıysa; hata isteği bozmaz)."""
+    from . import notify
+    try:
+        with get_db() as db:
+            s = notify.get_settings(db)
+        if not notify.smtp_ready(s):
+            return
+        subj = f"[{s['org_name'] or 'Tedarikçi Denetim'}] CAPA mesajı: {c['title'][:80]}"
+        body = f"{author} yazdı:\n\n{text}\n\nYanıtlamak için tedarikçi portalında CAPA kaydını açın."
+        import html as _h
+        notify.send_email(s, notify.parse_emails(sup["notify_emails"]), subj, body, f"<p><b>{_h.escape(author)}</b> yazdı:</p>"
+                          f"<p style='white-space:pre-wrap'>{_h.escape(text)}</p><p>Yanıtlamak için tedarikçi portalında CAPA kaydını açın.</p>")
+    except Exception:
+        pass

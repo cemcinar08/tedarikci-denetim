@@ -52,8 +52,8 @@ def _resolve_owner(db, supplier_id, audit_id, question_id, capa_id) -> int:
         c = db.execute("SELECT supplier_id, status FROM capa_items WHERE id=?", (capa_id,)).fetchone()
         if not c:
             raise HTTPException(404, "CAPA bulunamadı")
-        if c["status"] == "onaylandı":
-            raise HTTPException(409, "Onaylanmış CAPA'ya kanıt eklenemez.")
+        if c["status"] in ("onaylandı", "iptal edildi"):
+            raise HTTPException(409, "Kapanmış CAPA'ya kanıt eklenemez.")
         sid = c["supplier_id"]
     if audit_id:
         a = db.execute("SELECT supplier_id, checklist FROM audits WHERE id=?", (audit_id,)).fetchone()

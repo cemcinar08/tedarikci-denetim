@@ -60,7 +60,7 @@ const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v
 // ---------------------------------------------------------------- rozetler
 const riskBadge = (r) => riskPill(r);
 const sevBadge = (s) => `<span class="badge ${{ kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", düşük: "" }[s] || ""}">${esc(s)}</span>`;
-const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "", aday: "b-warn", "çıkış sürecinde": "b-bad" }[s] ?? ""}">${esc(s)}</span>`;
+const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "", aday: "b-warn", "çıkış sürecinde": "b-bad", "risk kabul edildi": "" }[s] ?? ""}">${esc(s)}</span>`;
 const checkBadge = (s) => {
   const m = { pass: ["b-ok", "Geçti"], warn: ["b-warn", "Uyarı"], fail: ["b-bad", "Başarısız"], info: ["", "Bilgi"], error: ["", "Ölçülemedi"] }[s] || ["", s];
   return `<span class="badge ${m[0]}">${m[1]}</span>`;
@@ -97,6 +97,7 @@ const routes = [
   [/^#\/kayitlar$/, viewAuditLogs],
   [/^#\/capa$/, viewCapaList],
   [/^#\/capa\/(\d+)$/, viewCapa],
+  [/^#\/onaylar$/, viewApprovals],
 ];
 
 async function router() {
@@ -1096,8 +1097,8 @@ function findingsTable(list, { compact = false, withSupplier = false, selectable
     <td><b>${esc(f.title)}</b>${!compact && f.action ? `<div class="small" style="color:var(--primary)">Aksiyon: ${esc(f.action)}</div>` : ""}${!compact && f.description ? `<div class="small muted" style="white-space:pre-wrap">${esc(f.description)}</div>` : ""}${!compact && f.supplier_comment ? `<div class="small" style="margin-top:4px"><b>Tedarikçi:</b> ${esc(f.supplier_comment)}</div>` : ""}</td>
     ${compact ? "" : `<td><span class="badge">${esc(f.source)}</span></td><td>${esc(f.owner || "—")}</td>`}
     <td class="small" style="${overdue(f) ? "color:var(--bad);font-weight:700" : ""}">${fmtDate(f.due_date)}${overdue(f) ? "<br>gecikti" : ""}</td>
-    <td>${compact ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto" ${can("finding:write") ? "" : "disabled"}>${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
-    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> <button class="sm" data-perm="capa:write" data-capa="${f.id}" data-sid="${f.supplier_id}" title="Bu bulgu için CAPA aç">CAPA</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
+    <td>${compact || f.status === "risk kabul edildi" ? statusBadge(f.status) : `<select data-fid="${f.id}" class="fstatus" style="width:auto" ${can("finding:write") ? "" : "disabled"}>${["açık", "devam ediyor", "kapandı"].map((s) => `<option ${s === f.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}${excBadge(f.exception)}</td>
+    ${compact ? "" : `<td>${supStatusBadge(f)}</td><td style="white-space:nowrap"><button class="sm" data-perm="notify:send" data-notify="${f.id}" data-sid="${f.supplier_id}" title="Tedarikçiye bildir">Bildir</button> ${["açık", "devam ediyor"].includes(f.status) && !(f.exception || "").endsWith("|beklemede") ? `<button class="sm" data-perm="finding:dispute" data-exc="${f.id}" title="İtiraz veya risk kabulü talebi">İstisna</button> ` : ""}<button class="sm" data-perm="capa:write" data-capa="${f.id}" data-sid="${f.supplier_id}" title="Bu bulgu için CAPA aç">CAPA</button> <button class="sm" data-perm="finding:write" data-edit="${f.id}">Düzenle</button></td>`}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindFindingActions(root, list) {
@@ -1112,6 +1113,7 @@ function bindFindingActions(root, list) {
   root.querySelectorAll("[data-notify]").forEach((b) => (b.onclick = () =>
     notifyModal({ supplier_id: +b.dataset.sid, finding_ids: [+b.dataset.notify] })));
   root.querySelectorAll("[data-capa]").forEach((b) => (b.onclick = () => capaForm(+b.dataset.sid, +b.dataset.capa)));
+  root.querySelectorAll("[data-exc]").forEach((b) => (b.onclick = () => exceptionForm(+b.dataset.exc)));
   const all = root.querySelector(".fsel-all");
   if (all) all.onchange = () => root.querySelectorAll(".fsel").forEach((c) => (c.checked = all.checked));
 }
@@ -1426,7 +1428,7 @@ async function auditExtras(a) {
 }
 
 // ================================================================ CAPA
-const capaBadge = (st) => `<span class="badge ${{ açık: "b-bad", "onay bekliyor": "b-warn", reddedildi: "b-crit", onaylandı: "b-ok" }[st] || ""}">${esc(st)}</span>`;
+const capaBadge = (st) => `<span class="badge ${{ açık: "b-bad", "onay bekliyor": "b-warn", reddedildi: "b-crit", onaylandı: "b-ok", "iptal edildi": "" }[st] || ""}">${esc(st)}</span>`;
 
 function capaTable(list, withSupplier = false) {
   if (!list.length) return `<div class="empty">CAPA kaydı yok.</div>`;
@@ -1477,9 +1479,11 @@ async function viewCapa(id) {
     </div>
     <div>
       <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Kanıtlar (${c.evidence.length})</h2>${canUp ? `<button class="sm" id="ev">+ Kanıt yükle</button>` : ""}</div><div id="evl">${evidenceTable(c.evidence)}</div></div>
+      <div class="card" id="msgs"></div>
       <div class="card"><h2>Geçmiş</h2>${c.events.map((e) => `<div class="small" style="margin-bottom:8px"><b>${esc(e.action)}</b>${e.to_status ? ` → ${capaBadge(e.to_status)}` : ""} <span class="muted">${fmtDT(e.created_at + "Z")} · ${esc(e.actor || "sistem")}</span>${e.comment ? `<div class="muted">${esc(e.comment)}</div>` : ""}</div>`).join("")}</div>
     </div></div>`;
   bindEvidence(document.getElementById("evl"), router);
+  capaMessages(c);
   const ev = document.getElementById("ev");
   if (ev) ev.onclick = () => uploadModal({ capa_id: c.id }, router);
   const sf = document.getElementById("sf");
@@ -1762,4 +1766,67 @@ async function contractsTab(T, s) {
   document.getElementById("nc2").onclick = () => form();
   T.querySelectorAll("[data-ce]").forEach((b) => (b.onclick = () => form(list.find((c) => c.id == b.dataset.ce))));
   T.querySelectorAll("[data-cu]").forEach((b) => (b.onclick = () => uploadModal({ contract_id: b.dataset.cu, kind: "sözleşme" }, router)));
+}
+
+
+// ================================================================ İSTİSNALAR (itiraz / risk kabulü) ve MESAJLAŞMA
+const excBadge = (x) => {
+  if (!x) return "";
+  const [type, st] = x.split("|");
+  if (st === "reddedildi" || st === "süresi doldu") return "";
+  return ` <span class="badge ${st === "beklemede" ? "b-warn" : ""}" title="${esc(type)} ${esc(st)}">${type === "itiraz" ? "itiraz" : "risk kabulü"}${st === "beklemede" ? " · onay bekliyor" : ""}</span>`;
+};
+
+function exceptionForm(fid) {
+  const canWaive = can("finding:write");
+  const max = new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10);
+  modal(`<h2>İstisna talebi</h2><form id="xf">
+    <label>Tür</label><select name="type">${isSupplier() ? "" : ""}<option value="itiraz">İtiraz — bulgu hatalı / yanlış pozitif</option>${canWaive ? `<option value="risk kabulü">Risk kabulü — bilinçli olarak kabul et (süreli)</option>` : ""}</select>
+    <label style="margin-top:8px">Gerekçe *</label><textarea name="reason" required minlength="10" placeholder="ör. Bu IP adresi 2025'te başka firmaya devredildi; kanıt olarak devir yazısını ekledik."></textarea>
+    <div id="wv" class="hidden"><label style="margin-top:8px">Telafi edici kontroller</label><textarea name="compensating_controls" placeholder="ör. Erişim WAF ile sınırlandı, aylık log incelemesi yapılıyor"></textarea>
+      <label style="margin-top:8px">Bitiş tarihi * (en fazla 1 yıl)</label><input type="date" name="expires_at" max="${max}"></div>
+    <div class="small muted" style="margin-top:8px">İtirazı denetçi, risk kabulünü yönetici onaylar. Onaylanana kadar bulgu açık kalır.</div>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Talep gönder</button></div></form>`, (box) => {
+    const f = box.querySelector("#xf");
+    f.type.onchange = () => box.querySelector("#wv").classList.toggle("hidden", f.type.value !== "risk kabulü");
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api(`/api/findings/${fid}/exceptions`, { method: "POST", body: formData(f) }); closeModal(); toast("Talep onaya gönderildi"); router(); } catch (err) { toast(err.message, 6000); }
+    };
+  });
+}
+
+async function viewApprovals() {
+  const list = await api("/api/exceptions");
+  const pend = list.filter((x) => x.status === "beklemede"), done = list.filter((x) => x.status !== "beklemede");
+  const row = (x, actions) => `<tr><td>${x.type === "itiraz" ? `<span class="badge">itiraz</span>` : `<span class="badge b-warn">risk kabulü</span>`}</td>
+    <td><b>${esc(x.finding_title)}</b><div class="small muted">${esc(x.supplier_name)} · ${sevBadge(x.severity)}</div>
+      <div class="small" style="margin-top:4px">${esc(x.reason)}</div>${x.compensating_controls ? `<div class="small muted">Telafi edici: ${esc(x.compensating_controls)}</div>` : ""}</td>
+    <td class="small">${esc(x.requested_by_name || "")}<div class="muted">${fmtDT(x.requested_at + "Z")}</div></td>
+    <td class="small">${x.expires_at ? fmtDate(x.expires_at) : "—"}</td>
+    <td>${actions ? `<div class="actions"><input data-cm="${x.id}" placeholder="Yorum (red için zorunlu)" style="width:200px"><button class="sm danger" data-rj="${x.id}">Reddet</button><button class="sm primary" data-ap="${x.id}">Onayla</button></div>`
+      : `${statusBadge(x.status)}<div class="small muted">${esc(x.decided_by_name || "")} ${x.decision_comment ? "— " + esc(x.decision_comment) : ""}</div>`}</td></tr>`;
+  $app.innerHTML = `<div class="page-head"><div><h1>Onaylar</h1><div class="muted">Bulgu itirazları (denetçi onayı) ve risk kabulü talepleri (yönetici onayı; kendi talebinizi onaylayamazsınız)</div></div></div>
+    <div class="card flush"><div class="card-head"><h2>Bekleyen talepler</h2><span class="small muted">${pend.length}</span></div>
+      ${pend.length ? `<div class="table-wrap"><table><thead><tr><th>Tür</th><th>Bulgu ve gerekçe</th><th>Talep eden</th><th>Bitiş</th><th></th></tr></thead><tbody>${pend.map((x) => row(x, true)).join("")}</tbody></table></div>` : `<div class="empty small">Bekleyen talep yok.</div>`}</div>
+    <div class="card flush"><div class="card-head"><h2>Geçmiş</h2></div>
+      ${done.length ? `<div class="table-wrap"><table><thead><tr><th>Tür</th><th>Bulgu ve gerekçe</th><th>Talep eden</th><th>Bitiş</th><th>Sonuç</th></tr></thead><tbody>${done.map((x) => row(x, false)).join("")}</tbody></table></div>` : `<div class="empty small">Kayıt yok.</div>`}</div>`;
+  const go = (id, decision) => api(`/api/exceptions/${id}/decide`, { method: "POST", body: { decision, comment: $app.querySelector(`[data-cm="${id}"]`).value || null } })
+    .then(() => { toast(decision === "approve" ? "Onaylandı" : "Reddedildi"); router(); }).catch((e) => toast(e.message, 6000));
+  $app.querySelectorAll("[data-ap]").forEach((b) => (b.onclick = () => go(b.dataset.ap, "approve")));
+  $app.querySelectorAll("[data-rj]").forEach((b) => (b.onclick = () => go(b.dataset.rj, "reject")));
+}
+
+async function capaMessages(c) {
+  const el = document.getElementById("msgs");
+  const msgs = await api(`/api/capa/${c.id}/comments`);
+  const open = !["onaylandı", "iptal edildi"].includes(c.status) && can("capa:comment");
+  el.innerHTML = `<h2>Mesajlar <span class="small muted">· ${msgs.length}</span></h2>
+    <div style="max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:${open ? 10 : 0}px" id="mlist">
+    ${msgs.length ? msgs.map((m) => `<div style="align-self:${(m.side === "tedarikçi") === isSupplier() ? "flex-end" : "flex-start"};max-width:85%;border:1px solid var(--border);border-radius:8px;padding:6px 10px;background:${m.side === "tedarikçi" ? "var(--muted-bg)" : "var(--background)"}">
+      <div class="small"><b>${esc(m.author || "")}</b> <span class="muted">· ${m.side} · ${fmtDT(m.created_at + "Z")}</span></div><div style="white-space:pre-wrap">${esc(m.body)}</div></div>`).join("") : `<div class="empty small">Henüz mesaj yok.</div>`}</div>
+    ${open ? `<form id="mf" style="display:flex;gap:6px"><textarea name="body" required placeholder="${isSupplier() ? "Denetçiye mesaj yazın…" : "Tedarikçiye mesaj yazın (e-posta ile de iletilir)…"}" style="min-height:38px"></textarea><button class="primary">Gönder</button></form>` : ""}`;
+  const ml = el.querySelector("#mlist"); ml.scrollTop = ml.scrollHeight;
+  const mf = el.querySelector("#mf");
+  if (mf) mf.onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/capa/${c.id}/comments`, { method: "POST", body: formData(mf) }); capaMessages(c); } catch (err) { toast(err.message); } };
 }

@@ -23,7 +23,7 @@ def summarize(suppliers: list[dict], capas: list[dict], certs: list[dict], today
     risk = {k: 0 for k in RISK_LEVELS}
     for s in suppliers:
         risk[s.get("risk_level") or "none"] += 1
-    open_caps = [c for c in capas if c["status"] != "onaylandı"]
+    open_caps = [c for c in capas if c["status"] not in ("onaylandı", "iptal edildi")]
     by_status = {k: 0 for k in ("açık", "onay bekliyor", "reddedildi")}
     by_sev = {k: 0 for k in ("kritik", "yüksek", "orta", "düşük")}
     for c in open_caps:
