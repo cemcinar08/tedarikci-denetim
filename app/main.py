@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import capa, events, evidence, summary
+from . import capa, events, evidence, importer, risk, summary
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -225,22 +225,24 @@ def _summary(db, s: dict) -> dict:
     cert = db.execute("SELECT MIN(expires_at) FROM evidence_files WHERE supplier_id=? AND kind='sertifika' AND expires_at IS NOT NULL",
                       (sid,)).fetchone()[0]
     audit = last_audit["score"] if last_audit else None
-    parts = [(audit, 0.6), (intel, 0.4)]
-    parts = [(v, w) for v, w in parts if v is not None]
-    overall = round(sum(v * w for v, w in parts) / sum(w for _, w in parts), 1) if parts else None
+    ratings = risk.latest_ratings(db, sid)
+    values = {"audit": audit, "intel": intel, **{k: (ratings[k]["score"] if k in ratings else None) for k in risk.RATING_DOMAINS}}
+    maturity = risk.maturity_score(values, risk.get_weights(db))
+    overall = maturity["score"]
+    sanction = risk.sanctions_state(db, sid)
 
     critical = f["critical"] or 0
     rejected = bool(last_audit and last_audit["decision"] == "rejected")
-    if rejected:  # kill-switch veya çok düşük puan: puandan bağımsız yüksek risk
-        risk = "yüksek"
+    if rejected or sanction == "doğrulandı":  # kill-switch / doğrulanmış yaptırım: puandan bağımsız yüksek risk
+        risk_level = "yüksek"
     elif overall is None:
-        risk = "bilinmiyor"
+        risk_level = "bilinmiyor"
     elif critical or overall < 50 or (s["criticality"] == "yüksek" and overall < 70):
-        risk = "yüksek"
-    elif overall < 75 or (f["overdue"] or 0) > 0:
-        risk = "orta"
+        risk_level = "yüksek"
+    elif overall < 75 or (f["overdue"] or 0) > 0 or sanction == "olası eşleşme":
+        risk_level = "orta"
     else:
-        risk = "düşük"
+        risk_level = "düşük"
     return {
         "audit_score": audit, "audit_rating": cl.rating(audit),
         "audit_decision": last_audit["decision"] if last_audit else None,
@@ -253,7 +255,9 @@ def _summary(db, s: dict) -> dict:
         "intel_grade": min((x["grade"] for x in scans if x["grade"]), default=None, key=lambda g: -ord(g)),
         "last_scan": max((x["scanned_at"] for x in scans), default=None),
         "open_findings": f["open"] or 0, "critical_findings": critical, "overdue_findings": f["overdue"] or 0,
-        "overall_score": overall, "risk": risk,
+        "overall_score": overall, "risk": risk_level, "maturity": maturity,
+        "ratings": {k: {"score": v["score"], "source": v["source"], "assessed_at": v["assessed_at"]} for k, v in ratings.items()},
+        "sanctions": sanction,
     }
 
 
@@ -726,6 +730,8 @@ app.include_router(capa.router)
 app.include_router(evidence.router)
 app.include_router(events.router)
 app.include_router(summary.router)
+app.include_router(risk.router)
+app.include_router(importer.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

@@ -159,7 +159,7 @@ def test_full_flow(client, monkeypatch):
     sm = detail["summary"]
     assert sm["intel_grade"] == "A" and sm["intel_score"] == 100
     assert sm["open_findings"] == 2
-    assert sm["overall_score"] == round(a["score"] * 0.6 + 100 * 0.4, 1)
+    assert sm["overall_score"] == round((a["score"] * 50 + 100 * 30) / 80, 1)  # varsayılan ağırlık: denetim 50, siber 30
     assert len(detail["scan_history"]) == 3
 
     d = client.get("/api/dashboard").json()

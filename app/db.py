@@ -258,6 +258,45 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     delivered_at     TEXT
 );
 
+-- ---------------------------------------------------------------- Risk alanları ve yaptırımlar
+CREATE TABLE IF NOT EXISTS risk_ratings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    domain       TEXT NOT NULL,            -- financial / esg / reputation
+    score        REAL NOT NULL,            -- 0-100
+    source       TEXT,
+    notes        TEXT,
+    assessed_at  TEXT NOT NULL,
+    assessed_by  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ratings_supplier ON risk_ratings(supplier_id, domain, assessed_at);
+
+CREATE TABLE IF NOT EXISTS sanctions_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    list        TEXT NOT NULL,             -- OFAC / BM / AB
+    name        TEXT NOT NULL,
+    normalized  TEXT NOT NULL,
+    program     TEXT,
+    ref         TEXT,
+    type        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sanctions_list ON sanctions_entries(list);
+
+CREATE TABLE IF NOT EXISTS sanctions_checks (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    name_checked        TEXT NOT NULL,
+    match_count         INTEGER NOT NULL,
+    matches             TEXT NOT NULL,     -- JSON
+    status              TEXT NOT NULL,     -- temiz / olası eşleşme / yanlış pozitif / doğrulandı
+    checked_by          TEXT,
+    checked_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    resolution_comment  TEXT,
+    resolved_by         TEXT,
+    resolved_at         TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT

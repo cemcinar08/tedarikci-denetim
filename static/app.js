@@ -283,7 +283,7 @@ async function viewDashboard() {
     el("cnt").textContent = `${shown.length} / ${d.ranking.length} tedarikçi`;
     el("rt").innerHTML = `<table><thead><tr>${cols.map(([id, l, , cls]) => `<th class="sortable ${cls || ""} ${sort.k === id ? "sorted" : ""}" data-k="${id}">${l}<span class="arr">${sort.k === id ? (sort.dir > 0 ? "↑" : "↓") : "↕"}</span></th>`).join("")}</tr></thead><tbody>
       ${shown.length ? shown.map((x) => { const cd = daysTo(x.next_cert_expiry); return `<tr>
-        <td><a href="#/tedarikci/${x.id}"><b>${esc(x.name)}</b></a>${x.category ? `<div class="small muted">${esc(x.category)}</div>` : ""}</td>
+        <td><a href="#/tedarikci/${x.id}"><b>${esc(x.name)}</b></a>${x.sanctions === "doğrulandı" ? ` <span class="badge b-crit">yaptırım</span>` : x.sanctions === "olası eşleşme" ? ` <span class="badge b-warn">yaptırım?</span>` : ""}${x.category ? `<div class="small muted">${esc(x.category)}</div>` : ""}</td>
         <td class="small">${x.tier_level ? `<span class="badge">T${x.tier_level}</span>` : `<span class="muted">—</span>`}</td>
         <td class="small">${esc(x.criticality)}</td>
         <td>${riskPill(x.risk)}</td>
@@ -322,7 +322,7 @@ async function viewSuppliers() {
   const list = await api("/api/suppliers");
   $app.innerHTML = `
   <div class="page-head"><div><h1>Tedarikçiler</h1><div class="muted">${list.length} kayıt</div></div>
-    <div class="actions"><button class="primary" id="add" data-perm="supplier:write">+ Yeni tedarikçi</button></div></div>
+    <div class="actions"><button id="imp" data-perm="supplier:write">İçe aktar</button><button class="primary" id="add" data-perm="supplier:write">+ Yeni tedarikçi</button></div></div>
   <div class="card">
     <div class="filters"><input id="q" placeholder="Ara (ad, kategori, domain)…" style="min-width:260px">
       <select id="fr"><option value="">Tüm riskler</option><option>yüksek</option><option>orta</option><option>düşük</option><option>bilinmiyor</option></select></div>
@@ -344,6 +344,7 @@ async function viewSuppliers() {
   document.getElementById("q").oninput = draw;
   document.getElementById("fr").onchange = draw;
   document.getElementById("add").onclick = () => supplierForm();
+  document.getElementById("imp").onclick = importModal;
   draw();
 }
 
@@ -395,7 +396,7 @@ async function supplierForm(s = {}, focus = null) {
 async function viewSupplier(id, tab = "ozet") {
   const s = await api(`/api/suppliers/${id}`);
   const sm = s.summary;
-  const tabs = [["ozet", "Özet"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["capa", "CAPA"], ["belgeler", "Sertifikalar"], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
+  const tabs = [["ozet", "Özet"], ["risk", "Risk & Uyum"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["capa", "CAPA"], ["belgeler", "Sertifikalar"], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
     !(k === "bildirimler" && !can("notify:send")) && !(k === "istihbarat" && isSupplier()));
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
@@ -471,6 +472,8 @@ async function viewSupplier(id, tab = "ozet") {
         router();
       } catch (err) { toast(err.message); b.disabled = false; b.textContent = "Tüm domain'leri tara"; }
     };
+  } else if (tab === "risk") {
+    await riskTab(T, s);
   } else if (tab === "capa") {
     const list = await api(`/api/capa?supplier_id=${s.id}`);
     T.innerHTML = `<div class="card">${can("capa:write") ? `<div class="actions" style="margin-bottom:12px"><button id="nc">+ Manuel CAPA</button></div>` : ""}${capaTable(list)}</div>`;
@@ -626,6 +629,8 @@ async function viewSettings() {
     <div class="actions" style="margin-top:12px;align-items:center"><span>Durum: ${st.smtp_ready ? `<span class="badge b-ok">hazır</span>` : `<span class="badge b-warn">yapılandırılmadı</span>`}</span>
       <input id="testTo" placeholder="Test alıcısı (e-posta)" style="width:260px"><button type="button" id="test">Test e-postası gönder</button></div></div>
   <div class="actions" style="justify-content:flex-end"><button class="primary">Kaydet</button></div></form>
+  <div class="card" style="margin-top:16px" id="wcard"></div>
+  <div class="card" style="margin-top:16px" id="sancard"></div>
   <div class="card" style="margin-top:16px" id="whcard"></div>
   <div class="card" style="margin-top:16px"><h2>Tedarikçi sistemleri için entegrasyon bilgisi</h2><div class="small">
     <p><b>Webhook (bizden tedarikçiye):</b> Her tedarikçi için tanımlanan adrese <code>POST</code> ile JSON gönderilir. Olaylar: <code>finding.notification</code>, <code>intel.notification</code>, <code>test</code>.
@@ -636,6 +641,8 @@ async function viewSettings() {
       <code>finding_id</code> verilmezse yanıt bildirimdeki tüm bulgulara uygulanır. <code>GET</code> aynı adreste bildirimin güncel durumunu döner. Token bildirime özeldir; yalnızca o bildirimin bulgularına erişim verir.</p>
     <p>Tedarikçinin "aksiyon planlandı" veya "giderildi" yanıtı, açık bulguyu "devam ediyor" durumuna alır. Bulguyu kapatmak (doğrulamak) her zaman sizin kararınızdır.</p></div></div>`;
   webhookAdmin(document.getElementById("whcard"));
+  weightsAdmin(document.getElementById("wcard"));
+  sanctionsAdmin(document.getElementById("sancard"));
   document.getElementById("sf").onsubmit = async (e) => {
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target));
@@ -1540,4 +1547,101 @@ async function webhookAdmin(root) {
     toast(r.status === "gönderildi" ? `Test gönderildi (HTTP ${r.response_code})` : `Başarısız: ${r.error}`, 6000); webhookAdmin(root);
   }));
   root.querySelectorAll("[data-wr]").forEach((b) => (b.onclick = async () => { await api(`/api/webhooks/deliveries/${b.dataset.wr}/retry`, { method: "POST" }); webhookAdmin(root); }));
+}
+
+
+// ================================================================ RİSK & UYUM
+const DIM_COLOR = { audit: "var(--foreground)", intel: "var(--accent)", financial: "#7c3aed", esg: "var(--ok)", reputation: "var(--warn)" };
+const RATING_TR = { financial: "Finansal", esg: "ESG", reputation: "İtibar" };
+
+async function riskTab(T, s) {
+  const [ratings, checks] = await Promise.all([api(`/api/suppliers/${s.id}/risk-ratings`), api(`/api/suppliers/${s.id}/sanctions-checks`)]);
+  const m = s.summary.maturity;
+  const last = checks[0];
+  T.innerHTML = `<div class="grid g2" style="align-items:start">
+    <div class="card"><h2>Olgunluk puanı ${num(m.score)} <span class="small muted">· veri kapsamı %${m.coverage}</span></h2>
+      <div class="small muted" style="margin-bottom:10px">Ağırlıklı ortalama. Verisi olmayan boyutun ağırlığı diğerlerine oransal dağıtılır. Ağırlıkları Ayarlar'dan değiştirebilirsiniz.</div>
+      <div class="bar" style="height:10px;margin-bottom:12px">${m.breakdown.filter((b) => b.contribution != null).map((b) => `<div title="${esc(b.label)}: ${num(b.contribution)}" style="width:${b.contribution}%;background:${DIM_COLOR[b.key]}"></div>`).join("")}</div>
+      <table class="dense"><thead><tr><th>Boyut</th><th class="num">Puan</th><th class="num">Ayarlı ağırlık</th><th class="num">Etkin ağırlık</th><th class="num">Katkı</th></tr></thead><tbody>
+      ${m.breakdown.map((b) => `<tr><td><span class="dot" style="color:${DIM_COLOR[b.key]}"></span> ${esc(b.label)}</td><td class="num">${b.value == null ? `<span class="muted">veri yok</span>` : num(b.value)}</td>
+        <td class="num muted">${num(b.weight)}</td><td class="num">${b.effective_weight ? "%" + num(b.effective_weight) : "—"}</td><td class="num"><b>${num(b.contribution)}</b></td></tr>`).join("")}</tbody></table></div>
+    <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Yaptırım taraması</h2><button class="sm" id="scr" data-perm="supplier:write">Şimdi tara</button></div>
+      <div class="small muted" style="margin-bottom:8px">Firma adı OFAC SDN, BM Konsolide ve AB Konsolide yaptırım listelerinde aranır (şirket ekleri ve Türkçe karakterler normalize edilir).</div>
+      ${last ? `<div style="margin-bottom:8px">${{ temiz: `<span class="badge b-ok">Temiz</span>`, "olası eşleşme": `<span class="badge b-warn">Olası eşleşme (${last.match_count})</span>`, "yanlış pozitif": `<span class="badge">Yanlış pozitif</span>`, "doğrulandı": `<span class="badge b-crit">Doğrulanmış yaptırım</span>` }[last.status]}
+          <span class="small muted">${fmtDT(last.checked_at + "Z")} · ${esc(last.checked_by || "")}</span>${last.resolution_comment ? `<div class="small">${esc(last.resolution_comment)} — ${esc(last.resolved_by || "")}</div>` : ""}</div>
+        ${last.matches.length ? `<table class="dense small"><thead><tr><th>Liste</th><th>Kayıt</th><th>Program</th><th class="num">Benzerlik</th></tr></thead><tbody>${last.matches.map((x) => `<tr><td>${esc(x.list)}</td><td>${esc(x.name)}<div class="muted">${esc(x.ref || "")}</div></td><td>${esc(x.program || "")}</td><td class="num">%${Math.round(x.score * 100)}</td></tr>`).join("")}</tbody></table>` : ""}
+        ${last.status === "olası eşleşme" && can("supplier:write") ? `<div class="actions" style="margin-top:8px"><input id="rcm" placeholder="Değerlendirme notu" style="flex:1"><button class="sm" id="fp">Yanlış pozitif</button><button class="sm danger" id="cf">Doğrula</button></div>` : ""}`
+      : `<div class="empty small">Henüz tarama yapılmadı.</div>`}</div>
+  </div>
+  <div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Finansal / ESG / itibar puanları</h2><div class="small muted">0–100 arası. Kaynak: kredi derecelendirme, Findeks raporu, EcoVadis, CDP, basın taraması veya iç değerlendirme.</div></div>
+    <button class="sm" id="nr" data-perm="supplier:write">+ Puan ekle</button></div>
+    ${ratings.length ? `<table class="dense"><thead><tr><th>Alan</th><th class="num">Puan</th><th>Kaynak</th><th>Not</th><th>Tarih</th><th>Giren</th></tr></thead><tbody>${ratings.map((r) => `<tr><td>${esc(RATING_TR[r.domain])}</td><td class="num"><b>${num(r.score)}</b></td><td>${esc(r.source || "—")}</td><td class="small">${esc(r.notes || "")}</td><td class="small">${fmtDate(r.assessed_at)}</td><td class="small muted">${esc(r.assessed_by || "")}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Puan girilmedi. Olgunluk puanı yalnızca denetim ve siber puanla hesaplanıyor.</div>`}</div>`;
+  const scr = document.getElementById("scr");
+  scr.onclick = async () => { scr.disabled = true; try { const r = await api(`/api/suppliers/${s.id}/sanctions-screen`, { method: "POST" }); toast(r.status === "temiz" ? "Eşleşme yok" : `${r.match_count} olası eşleşme`); router(); } catch (e) { toast(e.message, 6000); scr.disabled = false; } };
+  const res = (status) => async () => { try { await api(`/api/sanctions-checks/${last.id}/resolve`, { method: "POST", body: { status, comment: document.getElementById("rcm").value || null } }); router(); } catch (e) { toast(e.message); } };
+  if (document.getElementById("fp")) { document.getElementById("fp").onclick = res("yanlış pozitif"); document.getElementById("cf").onclick = res("doğrulandı"); }
+  document.getElementById("nr").onclick = () => modal(`<h2>Risk puanı ekle</h2><form id="f"><div class="row">
+      <div><label>Alan</label><select name="domain"><option value="financial">Finansal</option><option value="esg">ESG</option><option value="reputation">İtibar</option></select></div>
+      <div><label>Puan (0–100)</label><input name="score" type="number" min="0" max="100" step="0.1" required></div>
+      <div><label>Değerlendirme tarihi</label><input name="assessed_at" type="date" value="${todayISO()}"></div></div>
+      <label>Kaynak</label><input name="source" placeholder="ör. Findeks, EcoVadis, iç değerlendirme">
+      <label style="margin-top:8px">Not</label><textarea name="notes"></textarea>
+      <div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></form>`, (box) => {
+    box.querySelector("#f").onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/suppliers/${s.id}/risk-ratings`, { method: "POST", body: formData(e.target) }); closeModal(); router(); } catch (err) { toast(err.message); } };
+  });
+}
+
+async function weightsAdmin(root) {
+  const w = await api("/api/score-weights");
+  root.innerHTML = `<h2>Olgunluk puanı ağırlıkları</h2><div class="small muted" style="margin-bottom:10px">Tedarikçinin genel (olgunluk) puanı bu ağırlıklarla hesaplanır. Dış istihbarat (siber) puanının etkisini buradan artırıp azaltabilirsiniz. Verisi olmayan boyutun ağırlığı diğerlerine oransal dağıtılır.</div>
+    <form id="wf"><div class="row">${Object.entries(w.labels).map(([k, l]) => `<div><label>${esc(l)}</label><input type="number" name="${k}" min="0" max="100" step="1" value="${w.weights[k]}"></div>`).join("")}</div>
+    <div class="actions" style="justify-content:space-between"><span class="small muted" id="wsum"></span><div class="actions"><button type="button" id="wdef">Varsayılana dön</button><button class="primary">Kaydet</button></div></div></form>`;
+  const f = root.querySelector("#wf");
+  const sum = () => { const t = [...f.querySelectorAll("input")].reduce((a, i) => a + (+i.value || 0), 0); root.querySelector("#wsum").textContent = `Toplam ${t} — oranlar: ` + [...f.querySelectorAll("input")].filter((i) => +i.value).map((i) => `${w.labels[i.name]} %${Math.round((+i.value / t) * 100)}`).join(" · "); };
+  f.oninput = sum; sum();
+  root.querySelector("#wdef").onclick = () => { for (const [k, v] of Object.entries(w.defaults)) f[k].value = v; sum(); };
+  f.onsubmit = async (e) => { e.preventDefault(); try { await api("/api/score-weights", { method: "PUT", body: Object.fromEntries([...f.querySelectorAll("input")].map((i) => [i.name, +i.value || 0])) }); toast("Ağırlıklar kaydedildi; tüm puanlar yeniden hesaplandı."); } catch (err) { toast(err.message); } };
+}
+
+async function sanctionsAdmin(root) {
+  const st = await api("/api/sanctions/status");
+  root.innerHTML = `<div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Yaptırım listeleri</h2><div class="small muted">Resmi listeler indirilip bu bilgisayarda saklanır; tarama çevrimdışı yapılır. Ayda bir güncellemeniz önerilir.</div></div><button id="supd">Listeleri güncelle</button></div>
+    <table class="dense"><tbody>${st.map((x) => `<tr><td><b>${esc(x.list)}</b><div class="small muted" style="word-break:break-all">${esc(x.url)}</div></td><td class="num">${x.entries.toLocaleString("tr-TR")} kayıt</td><td class="small">${x.updated_at ? fmtDT(x.updated_at + "Z") : `<span class="muted">indirilmedi</span>`}</td></tr>`).join("")}</tbody></table>`;
+  root.querySelector("#supd").onclick = async (e) => {
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> İndiriliyor (1–2 dk)…`;
+    const r = await api("/api/sanctions/update", { method: "POST" }).catch((err) => [{ ok: false, list: "—", error: err.message }]);
+    toast(r.map((x) => `${x.list}: ${x.ok ? x.entries.toLocaleString("tr-TR") + " kayıt" : "hata (" + x.error + ")"}`).join(" · "), 9000);
+    sanctionsAdmin(root);
+  };
+}
+
+function importModal() {
+  modal(`<h2>Tedarikçileri içe aktar</h2>
+    <div class="small muted" style="margin-bottom:10px">Excel (.xlsx) veya CSV dosyası yükleyin. İlk satır başlık olmalı; tanınan sütunlar: Firma adı (zorunlu), Kategori, Ülke, Kritiklik, Tier, Yetkili, E-posta, Telefon, Domain, Bildirim e-postası, Notlar.
+      <a href="/api/import/suppliers/template.csv">Örnek şablonu indirin</a>.</div>
+    <input type="file" id="if" accept=".csv,.xlsx,.txt"><div id="ip" style="margin-top:12px"></div>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary" id="ic" disabled>İçe aktar</button></div>`, (box) => {
+    box.style.maxWidth = "900px";
+    const send = async (commit) => {
+      const fd = new FormData(); fd.append("file", box.querySelector("#if").files[0]); fd.append("commit", commit ? "true" : "false");
+      const r = await fetch("/api/import/suppliers", { method: "POST", body: fd }); const d = await r.json();
+      if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Dosya okunamadı");
+      return d;
+    };
+    box.querySelector("#if").onchange = async () => {
+      const ip = box.querySelector("#ip"); ip.innerHTML = `<span class="spinner"></span> Okunuyor…`;
+      try {
+        const d = await send(false);
+        ip.innerHTML = `<div style="margin-bottom:8px"><span class="badge b-ok">${d.valid} aktarılacak</span> ${d.invalid ? `<span class="badge b-bad">${d.invalid} hatalı (atlanacak)</span>` : ""}</div>
+          <div class="table-wrap" style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:6px"><table class="dense small"><thead><tr><th>Satır</th><th>Firma</th><th>Kritiklik</th><th>Domain</th><th>Durum</th></tr></thead><tbody>
+          ${d.rows.map((r) => `<tr><td>${r.row}</td><td>${esc(r.name || "—")}</td><td>${esc(r.criticality)}</td><td>${esc(r.domains.join(", "))}</td>
+            <td>${r.errors.length ? `<span style="color:var(--bad)">${esc(r.errors.join("; "))}</span>` : `<span class="badge b-ok">tamam</span>`}${r.warnings.length ? `<div class="muted">${esc(r.warnings.join("; "))}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
+        box.querySelector("#ic").disabled = !d.valid;
+      } catch (e) { ip.innerHTML = `<div style="color:var(--bad)">${esc(e.message)}</div>`; }
+    };
+    box.querySelector("#ic").onclick = async (e) => {
+      e.target.disabled = true;
+      try { const d = await send(true); closeModal(); toast(`${d.created} tedarikçi eklendi.`); router(); } catch (err) { toast(err.message); e.target.disabled = false; }
+    };
+  });
 }

@@ -51,6 +51,12 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("POST", r"/api/suppliers", "supplier:write"), ("PUT", rf"/api/suppliers/{_R}", "supplier:write"),
     ("DELETE", rf"/api/suppliers/{_R}", "supplier:write"),
     ("GET", r"/api/supplier-tiers", "supplier:read"),
+    ("GET", rf"/api/suppliers/{_R}/risk-ratings", "supplier:read"), ("POST", rf"/api/suppliers/{_R}/risk-ratings", "supplier:write"),
+    ("GET", rf"/api/suppliers/{_R}/sanctions-checks", "supplier:read"), ("POST", rf"/api/suppliers/{_R}/sanctions-screen", "supplier:write"),
+    ("POST", rf"/api/sanctions-checks/{_R}/resolve", "supplier:write"),
+    ("GET", r"/api/sanctions/status", "supplier:read"), ("POST", r"/api/sanctions/update", "settings:manage"),
+    ("GET", r"/api/score-weights", "supplier:read"), ("PUT", r"/api/score-weights", "settings:manage"),
+    ("POST", r"/api/import/suppliers", "supplier:write"), ("GET", r"/api/import/suppliers/template\.csv", "supplier:write"),
     ("POST", r"/api/supplier-tiers", "settings:manage"), ("PUT", rf"/api/supplier-tiers/{_R}", "settings:manage"),
     ("DELETE", rf"/api/supplier-tiers/{_R}", "settings:manage"),
     # denetimler ve şablonlar
