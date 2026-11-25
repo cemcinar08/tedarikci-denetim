@@ -60,7 +60,7 @@ const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v
 // ---------------------------------------------------------------- rozetler
 const riskBadge = (r) => riskPill(r);
 const sevBadge = (s) => `<span class="badge ${{ kritik: "b-crit", yüksek: "b-bad", orta: "b-warn", düşük: "" }[s] || ""}">${esc(s)}</span>`;
-const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "" }[s] ?? ""}">${esc(s)}</span>`;
+const statusBadge = (s) => `<span class="badge ${{ kapandı: "b-ok", "devam ediyor": "b-warn", açık: "b-bad", tamamlandı: "b-ok", planlandı: "", aktif: "b-ok", askıda: "b-warn", pasif: "", aday: "b-warn", "çıkış sürecinde": "b-bad" }[s] ?? ""}">${esc(s)}</span>`;
 const checkBadge = (s) => {
   const m = { pass: ["b-ok", "Geçti"], warn: ["b-warn", "Uyarı"], fail: ["b-bad", "Başarısız"], info: ["", "Bilgi"], error: ["", "Ölçülemedi"] }[s] || ["", s];
   return `<span class="badge ${m[0]}">${m[1]}</span>`;
@@ -246,6 +246,9 @@ async function viewDashboard() {
     <div class="card flush"><div class="card-head"><h2>Sertifika bitişleri</h2><span class="small muted">60 gün</span></div>
       ${ce.items.length ? `<table class="dense"><tbody>${ce.items.slice(0, 6).map((x) => `<tr><td>${esc(x.title || x.original_name)}<div class="small muted">${esc(x.supplier_name)}</div></td>
         <td class="num small">${fmtDate(x.expires_at)}<div>${x.days_left < 0 ? `<span class="badge b-bad">${-x.days_left} gün geçti</span>` : `<span class="badge b-warn">${x.days_left} gün</span>`}</div></td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Yaklaşan sertifika bitişi yok.</div>`}</div>
+    ${sm.contracts ? `<div class="card flush"><div class="card-head"><h2>Sözleşme bitişleri</h2><span class="small muted">ihbar süresi dahil</span></div>
+      ${sm.contracts.length ? `<table class="dense"><tbody>${sm.contracts.slice(0, 6).map((x) => `<tr><td><a href="#/tedarikci/${x.supplier_id}/sozlesmeler">${esc(x.title)}</a><div class="small muted">${esc(x.supplier_name)}${x.notice_deadline ? " · ihbar " + fmtDate(x.notice_deadline) : ""}</div></td>
+        <td class="num small">${fmtDate(x.end_date)}<div>${contractBadge(x)}</div></td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Yaklaşan sözleşme bitişi yok.</div>`}</div>` : ""}
     <div class="card flush"><div class="card-head"><h2>Planlanan denetimler</h2><a class="small muted" href="#/denetimler">Tümü →</a></div>
       ${d.upcoming.length ? `<table class="dense"><tbody>${d.upcoming.slice(0, 6).map((a) => `<tr><td><a href="#/denetim/${a.id}">${esc(a.supplier_name)}</a><div class="small muted">${esc(a.audit_type)}${a.auditor ? " · " + esc(a.auditor) : ""}</div></td><td class="num small">${fmtDate(a.audit_date)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">Planlı denetim yok.</div>`}</div>
   </div>`;
@@ -343,7 +346,7 @@ async function viewSuppliers() {
   };
   document.getElementById("q").oninput = draw;
   document.getElementById("fr").onchange = draw;
-  document.getElementById("add").onclick = () => supplierForm();
+  document.getElementById("add").onclick = onboardModal;
   document.getElementById("imp").onclick = importModal;
   draw();
 }
@@ -356,7 +359,7 @@ async function supplierForm(s = {}, focus = null) {
     <div class="row"><div><label>Firma adı *</label><input name="name" required value="${esc(s.name || "")}"></div>
       <div><label>Kategori</label><input name="category" placeholder="ör. Hammadde, Lojistik, Yazılım" value="${esc(s.category || "")}"></div></div>
     <div class="row"><div><label>Kritiklik</label>${sel("criticality", ["düşük", "orta", "yüksek"], s.criticality || "orta")}</div>
-      <div><label>Durum</label>${sel("status", ["aktif", "askıda", "pasif"], s.status || "aktif")}</div>
+      <div><label>Durum</label>${sel("status", ["aday", "aktif", "askıda", "çıkış sürecinde", "pasif"], s.status || "aktif")}</div>
       <div><label>Ülke</label><input name="country" value="${esc(s.country || "")}"></div>
       <div><label>Seviye (tier)</label><select name="tier_id"><option value="">—</option>${tiers.map((t) => `<option value="${t.id}" ${t.id === s.tier_id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></div>
     <div class="row"><div><label>Yetkili</label><input name="contact_name" value="${esc(s.contact_name || "")}"></div>
@@ -396,12 +399,12 @@ async function supplierForm(s = {}, focus = null) {
 async function viewSupplier(id, tab = "ozet") {
   const s = await api(`/api/suppliers/${id}`);
   const sm = s.summary;
-  const tabs = [["ozet", "Özet"], ["risk", "Risk & Uyum"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["capa", "CAPA"], ["belgeler", "Sertifikalar"], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
-    !(k === "bildirimler" && !can("notify:send")) && !(k === "istihbarat" && isSupplier()));
+  const tabs = [["ozet", "Özet"], ["risk", "Risk & Uyum"], ["denetimler", `Denetimler (${s.audits.length})`], ["bulgular", `Bulgular (${sm.open_findings} açık)`], ["capa", "CAPA"], ["sozlesmeler", "Sözleşmeler"], ["belgeler", "Sertifikalar"], ["istihbarat", "Dış İstihbarat"], ["bildirimler", "Bildirimler"]].filter(([k]) =>
+    !(k === "bildirimler" && !can("notify:send")) && !(k === "istihbarat" && isSupplier()) && !(k === "sozlesmeler" && !can("contract:read")));
   $app.innerHTML = `
   <div class="page-head"><div><div class="small"><a href="#/tedarikciler">← Tedarikçiler</a></div>
     <h1>${esc(s.name)}</h1><div class="muted">${esc([s.category, s.country, s.tier_name].filter(Boolean).join(" · ") || "—")} · Kritiklik: <b>${esc(s.criticality)}</b> · ${statusBadge(s.status)}</div></div>
-    <div class="actions"><button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
+    <div class="actions">${["aktif", "askıda"].includes(s.status) ? `<button id="offb" data-perm="supplier:write">Çıkarma sürecini başlat</button>` : ""}<button id="edit" data-perm="supplier:write">Düzenle</button><a class="btn" href="#/rapor/${s.id}" data-perm="report:read">Rapor</a><button class="primary" id="newAudit" data-perm="audit:write">+ Denetim planla</button></div></div>
   <div class="kpis">
     <div class="kpi"><div class="l">Risk seviyesi</div><div class="v">${riskBadge(sm.risk)}</div></div>
     <div class="kpi"><div class="l">Genel puan</div><div class="v" style="color:${sm.audit_decision === "rejected" ? "var(--crit)" : scoreColor(sm.overall_score)}">${num(sm.overall_score)}</div></div>
@@ -409,9 +412,11 @@ async function viewSupplier(id, tab = "ozet") {
     <div class="kpi"><div class="l">Siber güvenlik notu</div><div class="v">${gradeBox(sm.intel_grade)} <span style="font-size:16px">${num(sm.intel_score)}</span></div><div class="l">${sm.last_scan ? "Tarama: " + fmtDT(sm.last_scan) : "Henüz taranmadı"}</div></div>
     <div class="kpi"><div class="l">Açık / gecikmiş bulgu</div><div class="v">${sm.open_findings} <span style="font-size:16px;color:var(--bad)">/ ${sm.overdue_findings}</span></div></div>
   </div>
+  <div id="lifecycle"></div>
   <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? "active" : ""}" onclick="location.hash='#/tedarikci/${s.id}/${k}'">${l}</button>`).join("")}</div>
   <div id="tab"></div>`;
   document.getElementById("edit").onclick = () => supplierForm(s);
+  lifecycleBanner(s);
   document.getElementById("newAudit").onclick = () => auditForm(s.id);
   const T = document.getElementById("tab");
 
@@ -479,6 +484,8 @@ async function viewSupplier(id, tab = "ozet") {
     T.innerHTML = `<div class="card">${can("capa:write") ? `<div class="actions" style="margin-bottom:12px"><button id="nc">+ Manuel CAPA</button></div>` : ""}${capaTable(list)}</div>`;
     const nc = document.getElementById("nc");
     if (nc) nc.onclick = () => capaForm(s.id);
+  } else if (tab === "sozlesmeler") {
+    await contractsTab(T, s);
   } else if (tab === "belgeler") {
     T.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2>Sertifikalar ve belgeler</h2>
       <div class="small muted">ISO, TSE, CE vb. sertifikalar geçerlilik tarihleriyle izlenir; bitişe 60 gün kala özet ekranında uyarı verilir.</div></div>
@@ -1644,4 +1651,115 @@ function importModal() {
       try { const d = await send(true); closeModal(); toast(`${d.created} tedarikçi eklendi.`); router(); } catch (err) { toast(err.message); e.target.disabled = false; }
     };
   });
+}
+
+
+// ================================================================ KABUL / ÇIKARMA / SÖZLEŞME
+async function onboardModal() {
+  const q = await api("/api/onboarding/questions");
+  modal(`<h2>Yeni tedarikçi — kabul</h2>
+    <div class="small muted" style="margin-bottom:12px">Doğal risk soruları tedarikçinin tier'ını, kritikliğini ve hangi soru setleriyle denetlenmesi gerektiğini önerir. Tedarikçi <b>aday</b> olarak oluşturulur; değerlendirme sonrası "Onayla" ile aktif edilir.</div>
+    <form id="of"><div class="row"><div><label>Firma adı *</label><input name="name" required></div><div><label>Kategori</label><input name="category"></div><div><label>Ülke</label><input name="country" value="Türkiye"></div></div>
+    <div class="row"><div><label>Yetkili</label><input name="contact_name"></div><div><label>E-posta</label><input name="email" type="email"></div><div><label>Domain</label><input name="domains" placeholder="ornek.com.tr"></div></div>
+    <h3>Doğal risk</h3>
+    ${q.questions.map((x) => `<div style="margin-bottom:8px"><label>${esc(x.text)}</label><select name="q_${x.key}" required><option value="">Seçin…</option>${x.options.map((o) => `<option value="${o.value}">${esc(o.label)}</option>`).join("")}</select></div>`).join("")}
+    <label>İlgili düzenlemeler</label><div class="chips" style="margin-bottom:12px">${Object.entries(q.regulations).map(([k, v]) => `<label class="te-small"><input type="checkbox" name="reg" value="${k}"> ${esc(v)}</label>`).join("")}</div>
+    <div class="card" id="sug" style="background:var(--muted-bg)"><span class="muted small">Tüm soruları cevaplayınca öneri burada görünür.</span></div>
+    <div class="actions" style="justify-content:space-between"><a href="#" id="quick" class="small">Formsuz hızlı ekle</a><div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Aday olarak oluştur</button></div></div></form>`, (box) => {
+    box.style.maxWidth = "760px";
+    const f = box.querySelector("#of");
+    const body = () => ({ answers: Object.fromEntries(q.questions.map((x) => [x.key, f[`q_${x.key}`].value])), regulations: [...f.querySelectorAll("[name=reg]:checked")].map((c) => c.value) });
+    const preview = async () => {
+      const b = body();
+      if (Object.values(b.answers).some((v) => !v)) return;
+      const r = await api("/api/onboarding/preview", { method: "POST", body: b }).catch(() => null);
+      if (!r) return;
+      box.querySelector("#sug").innerHTML = `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div><div class="small muted">Doğal risk</div><div style="font-size:22px;font-weight:600">${r.score}</div></div>
+        <div><div class="small muted">Önerilen</div><b>${esc(r.tier ? r.tier.name : "Tier " + r.tier_level)}</b> · kritiklik ${esc(r.criticality)}</div>
+        <div style="flex:1"><div class="small muted">Önerilen soru setleri</div>${r.templates.map((t) => `<span class="badge">${esc(t)}</span>`).join(" ")}</div></div>
+        ${r.reasons.length ? `<div class="small" style="margin-top:6px">Gerekçe: ${esc(r.reasons.join(" · "))}</div>` : ""}`;
+    };
+    f.onchange = preview;
+    box.querySelector("#quick").onclick = (e) => { e.preventDefault(); closeModal(); supplierForm(); };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const d = formData(f);
+      try {
+        const r = await api("/api/onboarding", { method: "POST", body: { ...body(), name: d.name, category: d.category, country: d.country, contact_name: d.contact_name, email: d.email, domains: (d.domains || "").split(/[\s,;]+/).filter(Boolean) } });
+        closeModal(); toast("Aday tedarikçi oluşturuldu"); location.hash = `#/tedarikci/${r.supplier_id}`;
+      } catch (err) { toast(err.message); }
+    };
+  });
+}
+
+async function lifecycleBanner(s) {
+  const el = document.getElementById("lifecycle");
+  const ob = document.getElementById("offb");
+  if (ob) ob.onclick = () => {
+    const reason = prompt("Çıkarma nedeni (ör. sözleşme sona erdi, performans, alternatif tedarikçi):");
+    if (reason) api(`/api/suppliers/${s.id}/offboarding`, { method: "POST", body: { reason } }).then(router).catch((e) => toast(e.message));
+  };
+  if (s.status === "aday") {
+    const it = await api(`/api/suppliers/${s.id}/intake`);
+    el.innerHTML = `<div class="card" style="border-color:var(--warn-bd);background:var(--warn-bg)"><div class="page-head" style="margin:0"><div>
+      <b>Aday tedarikçi.</b> ${it ? `Doğal risk ${it.score} · önerilen Tier ${it.tier_level} · önerilen setler: ${it.templates.map((t) => `<span class="badge">${esc(t)}</span>`).join(" ")}` : "Kabul formu doldurulmadı."}
+      <div class="small muted">Değerlendirmeyi (denetim/öz-değerlendirme, belgeler) tamamladıktan sonra tedarikçiyi onaylayın.</div></div>
+      <button class="primary" id="act" data-perm="supplier:write">Onayla ve aktif et</button></div></div>`;
+    document.getElementById("act").onclick = () => api(`/api/suppliers/${s.id}/activate`, { method: "POST" }).then(() => { toast("Tedarikçi aktif"); router(); }).catch((e) => toast(e.message));
+    applyPerms(el);
+  } else if (s.status === "çıkış sürecinde" || s.status === "pasif") {
+    const o = await api(`/api/suppliers/${s.id}/offboarding`);
+    if (!o) return;
+    const done = !!o.completed_at, edit = can("supplier:write") && !done;
+    el.innerHTML = `<div class="card"><div class="page-head" style="margin-bottom:8px"><div><h2 style="margin:0">Çıkarma (offboarding) ${done ? `<span class="badge b-ok">tamamlandı ${fmtDate(o.completed_at)}</span>` : `<span class="badge b-bad">${o.progress}/${o.items.length}</span>`}</h2>
+      <div class="small muted">Neden: ${esc(o.reason || "—")} · başlatan ${esc(o.started_by || "")} · ${fmtDate(o.started_at)}</div></div>
+      ${edit ? `<button class="primary" id="ocomp" ${o.progress < o.items.length ? "disabled" : ""}>Çıkarmayı tamamla</button>` : ""}</div>
+      ${o.items.map((i) => `<label class="te-small" style="padding:4px 0"><input type="checkbox" data-ok="${i.key}" ${i.done ? "checked" : ""} ${edit ? "" : "disabled"}> ${esc(i.label)}
+        ${i.done ? `<span class="small muted">— ${esc(i.done_by || "")} ${fmtDate(i.done_at)}</span>` : ""}</label>`).join("")}
+      ${edit ? `<div class="small muted" style="margin-top:6px">Tamamlanınca tedarikçi pasife alınır, tedarikçi kullanıcı hesapları ve tedarikçiye özel webhook'lar kapatılır.</div>` : ""}</div>`;
+    el.querySelectorAll("[data-ok]").forEach((c) => (c.onchange = () => api(`/api/suppliers/${s.id}/offboarding/items/${c.dataset.ok}`, { method: "PUT", body: { done: c.checked } }).then(() => lifecycleBanner(s)).catch((e) => toast(e.message))));
+    const oc = document.getElementById("ocomp");
+    if (oc) oc.onclick = () => confirm("Tedarikçi pasife alınacak ve hesapları kapatılacak. Devam?") && api(`/api/suppliers/${s.id}/offboarding/complete`, { method: "POST" }).then(() => { toast("Çıkarma tamamlandı"); router(); }).catch((e) => toast(e.message));
+  }
+}
+
+const contractBadge = (c) => `<span class="badge ${{ aktif: "b-ok", bitiyor: "b-warn", "otomatik yenilenecek": "", "süresi doldu": "b-bad", "başlamadı": "", süresiz: "" }[c.status] ?? ""}">${esc(c.status)}${c.days_left != null && c.days_left >= 0 && c.status !== "aktif" ? ` · ${c.days_left} gün` : ""}</span>`;
+
+async function contractsTab(T, s) {
+  const list = await api(`/api/suppliers/${s.id}/contracts`);
+  const files = await api(`/api/evidence?supplier_id=${s.id}&kind=sözleşme`);
+  T.innerHTML = `<div class="card flush"><div class="card-head"><h2>Sözleşmeler</h2><button class="sm" id="nc2" data-perm="contract:write">+ Sözleşme</button></div>
+    ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Sözleşme</th><th>Dönem</th><th>Durum</th><th>İhbar</th><th class="num">Bedel</th><th>Maddeler</th><th>Dosyalar</th><th></th></tr></thead><tbody>
+    ${list.map((c) => `<tr><td><b>${esc(c.title)}</b><div class="small muted">${esc(c.contract_no || "")}${c.owner ? " · " + esc(c.owner) : ""}</div></td>
+      <td class="small">${fmtDate(c.start_date)} – ${fmtDate(c.end_date)}${c.auto_renew ? `<div class="muted">otomatik yenilenir</div>` : ""}</td>
+      <td>${contractBadge(c)}</td><td class="small">${c.notice_deadline ? fmtDate(c.notice_deadline) + `<div class="muted">${c.notice_days} gün önce</div>` : "—"}</td>
+      <td class="num">${c.value != null ? Number(c.value).toLocaleString("tr-TR") + " " + esc(c.currency || "") : "—"}</td>
+      <td class="small">${[c.has_dpa && "Veri işleme (DPA)", c.has_nda && "Gizlilik (NDA)", c.has_security_clause && "Güvenlik maddesi"].filter(Boolean).map((x) => `<span class="badge b-ok">${x}</span>`).join(" ") || `<span class="badge b-warn">eksik</span>`}</td>
+      <td class="small">${files.filter((f) => f.contract_id === c.id).map((f) => `<a href="/api/evidence/${f.id}/download">📎 ${esc(f.title || f.original_name)}</a>`).join("<br>") || "—"}</td>
+      <td style="white-space:nowrap" data-perm="contract:write"><button class="sm" data-cu="${c.id}">Dosya</button> <button class="sm" data-ce="${c.id}">Düzenle</button></td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty small">Sözleşme kaydı yok.</div>`}</div>`;
+  const form = (c = { currency: "TRY", notice_days: 0 }) => modal(`<h2>${c.id ? "Sözleşmeyi düzenle" : "Yeni sözleşme"}</h2><form id="cf">
+    <div class="row"><div><label>Başlık *</label><input name="title" required value="${esc(c.title || "")}"></div><div><label>Sözleşme no</label><input name="contract_no" value="${esc(c.contract_no || "")}"></div><div><label>Sorumlu</label><input name="owner" value="${esc(c.owner || "")}"></div></div>
+    <div class="row"><div><label>Başlangıç</label><input type="date" name="start_date" value="${esc(c.start_date || "")}"></div><div><label>Bitiş</label><input type="date" name="end_date" value="${esc(c.end_date || "")}"></div>
+      <div><label>Fesih ihbar süresi (gün)</label><input type="number" min="0" name="notice_days" value="${c.notice_days || 0}"></div></div>
+    <div class="row"><div><label>Bedel</label><input type="number" min="0" step="0.01" name="value" value="${c.value ?? ""}"></div><div><label>Para birimi</label><input name="currency" maxlength="3" value="${esc(c.currency || "TRY")}"></div>
+      <div><label>&nbsp;</label><label class="te-small"><input type="checkbox" name="auto_renew" ${c.auto_renew ? "checked" : ""}> Otomatik yenilenir</label></div></div>
+    <div class="chips" style="margin-bottom:10px"><label class="te-small"><input type="checkbox" name="has_dpa" ${c.has_dpa ? "checked" : ""}> Veri işleme sözleşmesi (KVKK/GDPR)</label>
+      <label class="te-small"><input type="checkbox" name="has_nda" ${c.has_nda ? "checked" : ""}> Gizlilik sözleşmesi</label><label class="te-small"><input type="checkbox" name="has_security_clause" ${c.has_security_clause ? "checked" : ""}> Bilgi güvenliği maddesi / denetim hakkı</label></div>
+    <label>SLA / hizmet seviyeleri</label><textarea name="sla">${esc(c.sla || "")}</textarea><label style="margin-top:8px">Notlar</label><textarea name="notes">${esc(c.notes || "")}</textarea>
+    <div class="actions" style="justify-content:space-between;margin-top:12px">${c.id ? `<button type="button" class="danger" id="cdel">Sil</button>` : "<span></span>"}<div class="actions"><button type="button" onclick="closeModal()">Vazgeç</button><button class="primary">Kaydet</button></div></div></form>`, (box) => {
+    const f = box.querySelector("#cf");
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const d = formData(f);
+      for (const k of ["auto_renew", "has_dpa", "has_nda", "has_security_clause"]) d[k] = f[k].checked;
+      d.notice_days = +d.notice_days || 0; d.value = d.value === null ? null : +d.value;
+      try { await api(c.id ? `/api/contracts/${c.id}` : `/api/suppliers/${s.id}/contracts`, { method: c.id ? "PUT" : "POST", body: d }); closeModal(); router(); } catch (err) { toast(err.message); }
+    };
+    const del = box.querySelector("#cdel");
+    if (del) del.onclick = () => confirm("Sözleşme silinsin mi?") && api(`/api/contracts/${c.id}`, { method: "DELETE" }).then(() => { closeModal(); router(); });
+  });
+  document.getElementById("nc2").onclick = () => form();
+  T.querySelectorAll("[data-ce]").forEach((b) => (b.onclick = () => form(list.find((c) => c.id == b.dataset.ce))));
+  T.querySelectorAll("[data-cu]").forEach((b) => (b.onclick = () => uploadModal({ contract_id: b.dataset.cu, kind: "sözleşme" }, router)));
 }

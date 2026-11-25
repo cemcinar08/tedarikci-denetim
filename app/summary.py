@@ -60,4 +60,15 @@ def summary(days: int = Query(60, ge=1, le=365), tier_id: Optional[int] = None):
         certs = rows(db.execute(
             f"SELECT e.id, e.supplier_id, s.name AS supplier_name, e.title, e.original_name, e.expires_at FROM evidence_files e "
             f"JOIN suppliers s ON s.id=e.supplier_id WHERE e.kind='sertifika' AND e.supplier_id IN ({ph})", ids).fetchall())
-    return summarize(sups, capas, certs, dt.date.today(), days)
+    out = summarize(sups, capas, certs, dt.date.today(), days)
+    from .auth import has_perm, current_user
+    from .lifecycle import contract_status
+    if has_perm(current_user(), "contract:read"):
+        with get_db() as db:
+            cons = rows(db.execute(f"SELECT c.id, c.supplier_id, s.name AS supplier_name, c.title, c.end_date, c.notice_days, c.auto_renew, "
+                                   f"c.start_date FROM contracts c JOIN suppliers s ON s.id=c.supplier_id WHERE c.supplier_id IN ({ph}) "
+                                   f"AND c.end_date IS NOT NULL", ids).fetchall())
+        items = [{**c, **contract_status(c, dt.date.today(), days)} for c in cons]
+        out["contracts"] = sorted([c for c in items if c["status"] in ("bitiyor", "otomatik yenilenecek", "süresi doldu")],
+                                  key=lambda c: c["end_date"])
+    return out

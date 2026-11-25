@@ -297,6 +297,53 @@ CREATE TABLE IF NOT EXISTS sanctions_checks (
     resolved_at         TEXT
 );
 
+-- ---------------------------------------------------------------- Yaşam döngüsü ve sözleşmeler
+CREATE TABLE IF NOT EXISTS supplier_intake (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    answers      TEXT NOT NULL,      -- JSON (doğal risk soruları)
+    regulations  TEXT,               -- JSON
+    score        REAL NOT NULL,      -- doğal risk 0-100
+    tier_level   INTEGER NOT NULL,   -- önerilen tier
+    templates    TEXT,               -- JSON: önerilen soru setleri (key)
+    notes        TEXT,
+    created_by   TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS offboarding (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id   INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    reason        TEXT,
+    items         TEXT NOT NULL,     -- JSON kontrol listesi
+    started_by    TEXT,
+    started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_by  TEXT,
+    completed_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS contracts (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id          INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    title                TEXT NOT NULL,
+    contract_no          TEXT,
+    start_date           TEXT,
+    end_date             TEXT,
+    auto_renew           INTEGER NOT NULL DEFAULT 0,
+    notice_days          INTEGER NOT NULL DEFAULT 0,   -- fesih ihbar süresi
+    value                REAL,
+    currency             TEXT,
+    sla                  TEXT,
+    has_dpa              INTEGER NOT NULL DEFAULT 0,   -- veri işleme sözleşmesi
+    has_nda              INTEGER NOT NULL DEFAULT 0,
+    has_security_clause  INTEGER NOT NULL DEFAULT 0,
+    owner                TEXT,
+    notes                TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contracts_supplier ON contracts(supplier_id, end_date);
+
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -360,6 +407,7 @@ MIGRATIONS = {
         "webhook_secret": "TEXT",                # HMAC-SHA256 imza anahtarı
         "auto_notify": "INTEGER NOT NULL DEFAULT 0",
     },
+    "evidence_files": {"contract_id": "INTEGER REFERENCES contracts(id) ON DELETE CASCADE"},
     "findings": {
         "question_id": "TEXT",                   # denetimdeki soru (denetim kaynaklı bulgular)
         "supplier_status": "TEXT",               # bildirildi / okundu / aksiyon planlandı / giderildi / itiraz

@@ -77,10 +77,11 @@ def _resolve_owner(db, supplier_id, audit_id, question_id, capa_id) -> int:
 
 
 @router.post("/api/evidence", status_code=201)
-async def upload(file: UploadFile = File(...), kind: Literal["kanıt", "sertifika"] = Form("kanıt"),
+async def upload(file: UploadFile = File(...), kind: Literal["kanıt", "sertifika", "sözleşme"] = Form("kanıt"),
                  title: Optional[str] = Form(None), supplier_id: Optional[int] = Form(None),
                  audit_id: Optional[int] = Form(None), question_id: Optional[str] = Form(None),
-                 capa_id: Optional[int] = Form(None), expires_at: Optional[str] = Form(None)):
+                 capa_id: Optional[int] = Form(None), expires_at: Optional[str] = Form(None),
+                 contract_id: Optional[int] = Form(None)):
     if expires_at and not DATE_RE.match(expires_at):
         raise HTTPException(422, "Bitiş tarihi YYYY-AA-GG biçiminde olmalı.")
     if kind == "sertifika" and not expires_at:
@@ -96,6 +97,16 @@ async def upload(file: UploadFile = File(...), kind: Literal["kanıt", "sertifik
         if st and st[0] == "tamamlandı":
             raise HTTPException(409, "Tamamlanmış denetime tedarikçi kanıt ekleyemez; ilgili CAPA üzerinden yükleyin.")
     with get_db() as db:
+        if contract_id:
+            c = db.execute("SELECT supplier_id FROM contracts WHERE id=?", (contract_id,)).fetchone()
+            if not c:
+                raise HTTPException(404, "Sözleşme bulunamadı")
+            if is_supplier_user():
+                raise HTTPException(403, "Sözleşme dosyasını yalnızca kurum kullanıcıları yükleyebilir.")
+            supplier_id = supplier_id or c[0]
+            if supplier_id != c[0]:
+                raise HTTPException(422, "Tedarikçi sözleşmeyle uyuşmuyor.")
+            kind = "sözleşme"
         sid = _resolve_owner(db, supplier_id, audit_id, question_id, capa_id)
     # Diske yaz (boyut sınırıyla, akış halinde)
     d = storage_dir() / str(sid)
@@ -119,9 +130,9 @@ async def upload(file: UploadFile = File(...), kind: Literal["kanıt", "sertifik
     u = current_user()
     with get_db() as db:
         eid = db.execute(
-            "INSERT INTO evidence_files (supplier_id, audit_id, question_id, capa_id, kind, title, original_name, stored_name, "
-            "mime, size, sha256, expires_at, uploaded_by, uploaded_by_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, audit_id, question_id, capa_id, kind, title or safe_name(file.filename), safe_name(file.filename), stored,
+            "INSERT INTO evidence_files (supplier_id, audit_id, question_id, capa_id, contract_id, kind, title, original_name, stored_name, "
+            "mime, size, sha256, expires_at, uploaded_by, uploaded_by_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, audit_id, question_id, capa_id, contract_id, kind, title or safe_name(file.filename), safe_name(file.filename), stored,
              file.content_type, size, h.hexdigest(), expires_at, u.get("id"), u.get("name"))).lastrowid
         if capa_id:
             db.execute("INSERT INTO capa_events (capa_id, user_id, actor, action, comment) VALUES (?,?,?,?,?)",
@@ -133,7 +144,7 @@ async def upload(file: UploadFile = File(...), kind: Literal["kanıt", "sertifik
 def _get(db, eid: int) -> dict:
     e = row(db.execute("SELECT e.*, s.name AS supplier_name FROM evidence_files e JOIN suppliers s ON s.id=e.supplier_id "
                        "WHERE e.id=?", (eid,)).fetchone())
-    if not e:
+    if not e or (e["kind"] == "sözleşme" and is_supplier_user()):
         raise HTTPException(404, "Dosya bulunamadı")
     ensure_supplier_access(e["supplier_id"])
     e["cert_status"] = cert_status(e["expires_at"]) if e["kind"] == "sertifika" else None
@@ -143,14 +154,16 @@ def _get(db, eid: int) -> dict:
 
 @router.get("/api/evidence")
 def list_evidence(supplier_id: Optional[int] = None, audit_id: Optional[int] = None, capa_id: Optional[int] = None,
-                  kind: Optional[str] = None, question_id: Optional[str] = None):
+                  kind: Optional[str] = None, question_id: Optional[str] = None, contract_id: Optional[int] = None):
     q = "SELECT e.*, s.name AS supplier_name FROM evidence_files e JOIN suppliers s ON s.id=e.supplier_id WHERE 1=1"
     p: list = []
     for col, v in (("e.supplier_id", supplier_id), ("e.audit_id", audit_id), ("e.capa_id", capa_id), ("e.kind", kind),
-                   ("e.question_id", question_id)):
+                   ("e.question_id", question_id), ("e.contract_id", contract_id)):
         if v is not None:
             q += f" AND {col}=?"; p.append(v)
     w, wp = scoped("e.supplier_id")
+    if is_supplier_user():
+        w += " AND e.kind != 'sözleşme'"
     with get_db() as db:
         out = rows(db.execute(q + w + " ORDER BY e.id DESC", p + wp).fetchall())
     for e in out:
@@ -169,7 +182,7 @@ def get_evidence(eid: int):
 def download(eid: int):
     with get_db() as db:
         e = row(db.execute("SELECT * FROM evidence_files WHERE id=?", (eid,)).fetchone())
-    if not e:
+    if not e or (e["kind"] == "sözleşme" and is_supplier_user()):
         raise HTTPException(404, "Dosya bulunamadı")
     ensure_supplier_access(e["supplier_id"])
     path = storage_dir() / str(e["supplier_id"]) / e["stored_name"]

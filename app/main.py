@@ -17,7 +17,7 @@ from . import checklist as cl
 from .db import get_db, init_db, row, rows
 from .intel.scanner import normalize_domain, scan_domain
 from . import notify
-from . import capa, events, evidence, importer, risk, summary
+from . import capa, events, evidence, importer, lifecycle, risk, summary
 from .reports import api as reports_api
 from . import template_store as ts
 from . import templates_engine as eng
@@ -60,7 +60,7 @@ class SupplierIn(BaseModel):
     phone: Optional[str] = None
     domains: list[str] = []
     criticality: Literal["düşük", "orta", "yüksek"] = "orta"
-    status: Literal["aktif", "askıda", "pasif"] = "aktif"
+    status: Literal["aday", "aktif", "askıda", "çıkış sürecinde", "pasif"] = "aktif"
     notes: Optional[str] = None
     tier_id: Optional[int] = None
     # Bildirim ayarları
@@ -732,6 +732,7 @@ app.include_router(events.router)
 app.include_router(summary.router)
 app.include_router(risk.router)
 app.include_router(importer.router)
+app.include_router(lifecycle.router)
 app.include_router(reports_api.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

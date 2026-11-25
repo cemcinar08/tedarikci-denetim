@@ -32,13 +32,13 @@ ROLES: dict[str, dict] = {
     "auditor": {"title": "Denetçi", "perms": [
         "supplier:read", "supplier:write", "audit:read", "audit:write", "template:read", "template:write",
         "finding:read", "finding:write", "capa:read", "capa:write", "capa:review", "evidence:read", "evidence:write",
-        "intel:scan", "notify:send", "report:read", "summary:read", "settings:read"]},
+        "intel:scan", "notify:send", "report:read", "summary:read", "settings:read", "contract:read", "contract:write"]},
     "supplier": {"title": "Tedarikçi", "perms": [
         "supplier:read", "audit:read", "finding:read", "capa:read", "capa:submit", "evidence:read", "evidence:write",
         "report:read", "summary:read"]},
     "viewer": {"title": "İzleyici", "perms": [
         "supplier:read", "audit:read", "template:read", "finding:read", "capa:read", "evidence:read",
-        "report:read", "summary:read"]},
+        "report:read", "summary:read", "contract:read"]},
 }
 
 # (yöntem, yol deseni, gereken yetki). None = giriş yapmış herkes. Sıra önemlidir; ilk eşleşen kullanılır.
@@ -56,6 +56,14 @@ PERMS: list[tuple[str, str, Optional[str]]] = [
     ("POST", rf"/api/sanctions-checks/{_R}/resolve", "supplier:write"),
     ("GET", r"/api/sanctions/status", "supplier:read"), ("POST", r"/api/sanctions/update", "settings:manage"),
     ("GET", r"/api/score-weights", "supplier:read"), ("PUT", r"/api/score-weights", "settings:manage"),
+    ("GET", r"/api/onboarding/questions", "supplier:read"), ("POST", r"/api/onboarding(/preview)?", "supplier:write"),
+    ("GET", rf"/api/suppliers/{_R}/intake", "supplier:read"), ("POST", rf"/api/suppliers/{_R}/intake", "supplier:write"),
+    ("POST", rf"/api/suppliers/{_R}/activate", "supplier:write"),
+    ("GET", rf"/api/suppliers/{_R}/offboarding", "supplier:read"), ("POST", rf"/api/suppliers/{_R}/offboarding(/complete)?", "supplier:write"),
+    ("PUT", rf"/api/suppliers/{_R}/offboarding/items/{_R}", "supplier:write"),
+    ("GET", r"/api/contracts", "contract:read"), ("GET", rf"/api/suppliers/{_R}/contracts", "contract:read"),
+    ("POST", rf"/api/suppliers/{_R}/contracts", "contract:write"), ("PUT", rf"/api/contracts/{_R}", "contract:write"),
+    ("DELETE", rf"/api/contracts/{_R}", "contract:write"),
     ("POST", r"/api/import/suppliers", "supplier:write"), ("GET", r"/api/import/suppliers/template\.csv", "supplier:write"),
     ("POST", r"/api/supplier-tiers", "settings:manage"), ("PUT", rf"/api/supplier-tiers/{_R}", "settings:manage"),
     ("DELETE", rf"/api/supplier-tiers/{_R}", "settings:manage"),
